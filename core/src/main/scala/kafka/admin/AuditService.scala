@@ -10,10 +10,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 
 import joptsimple.ValueConverter
-import kafka.admin.AuditMessageType.AuditMessageType
 import kafka.admin.AuditType.AuditType
 import kafka.coordinator.group.{GroupMetadataKey, GroupMetadataManager, OffsetKey}
-import kafka.utils.{Json, Logging}
+import kafka.utils.Logging
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRebalanceListener, ConsumerRecord, KafkaConsumer}
 import org.apache.kafka.common.TopicPartition
@@ -21,15 +20,13 @@ import org.apache.kafka.common.errors.WakeupException
 import org.apache.kafka.common.internals.Topic
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Time
-import org.slf4j.LoggerFactory
 
 import scala.collection.JavaConverters._
 
 class AuditService(auditType: AuditType, bootstrapServer: String) extends Logging {
-  private lazy val auditLogger = LoggerFactory.getLogger("consumer_groups_audit_logger")
+  private val auditor = new Auditor()
 
   private val auditConsumer = createAuditConsumer(bootstrapServer)
-  private val auditConsumerHost = InetAddress.getLocalHost.getCanonicalHostName
 
   private val auditShutdown = new AtomicBoolean(false)
   private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
@@ -56,7 +53,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
       case e: WakeupException =>
         info("Audit service woken up")
         if (!auditShutdown.get()) {
-          error("Woken up not as part of shutdown", e)
+          error("Waking up was not part of a shutdown", e)
           throw e
         }
     }
@@ -65,7 +62,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
       auditConsumer.close()
       info("Signalling that audit consumer loop has been shut down")
       shutdownLatch.countDown()
-      info("Signalled that audit consumer loop has been shut down")
+      info("Signalled that audit consumer loop has been shut down.")
     }
   }
 
@@ -88,7 +85,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
               offsetMessage.commitTimestamp,
               offsetMessage.expireTimestamp
             )
-            sendAsJsonToAuditLog(AuditMessageType.OffsetCommit, o.asJavaMap)
+            auditor.sendAuditInfo(AuditMessageType.OffsetCommit, o.asJavaMap)
           case None => //
         }
       case _ => // no-op
@@ -115,7 +112,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
               groupMetadata.canRebalance
             )
 
-            sendAsJsonToAuditLog(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap)
+            auditor.sendAuditInfo(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap)
 
             for ((topicPartition, offsetAndMetadata) <- groupMetadata.allOffsets) {
               val o = GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage,
@@ -126,7 +123,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
                 offsetAndMetadata.commitTimestamp,
                 offsetAndMetadata.expireTimestamp)
 
-              sendAsJsonToAuditLog(AuditMessageType.GroupOffsets, o.asJavaMap)
+              auditor.sendAuditInfo(AuditMessageType.GroupOffsets, o.asJavaMap)
             }
 
             for (memberMetadata <- groupMetadata.allMemberMetadata) {
@@ -145,7 +142,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
                   pt.partition(),
                   assignment.userData())
 
-                sendAsJsonToAuditLog(AuditMessageType.PartitionAssignment, o.asJavaMap)
+                auditor.sendAuditInfo(AuditMessageType.PartitionAssignment, o.asJavaMap)
               }
             }
           case None => //
@@ -166,29 +163,10 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
     new KafkaConsumer[Array[Byte], Array[Byte]](properties)
   }
 
-  private val auditRebalanceListener = new ConsumerRebalanceListener {
-    override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
-      partitions.asScala.foreach { tp =>
-        val o = AuditPartitionsRevokedAuditMessage(System.currentTimeMillis(),auditConsumerHost,tp.topic(),tp.partition())
-        sendAsJsonToAuditLog(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
-      }
-    }
-
-    override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
-      partitions.asScala.foreach { tp =>
-        val o = AuditPartitionsAssignedAuditMessage(System.currentTimeMillis(),auditConsumerHost,tp.topic(),tp.partition())
-        sendAsJsonToAuditLog(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
-      }
-    }
-  }
-
-  private def sendAsJsonToAuditLog(messageType: AuditMessageType, javaMap: util.Map[String, Any]): Unit = {
-    val s = Json.encodeAsString(javaMap.asScala.update("kafkaAuditMessageType",messageType.toString))
-    auditLogger.info(s)
-  }
+  private val auditRebalanceListener = new AuditRebalanceListener(auditor)
 
   private def addAuditShutdownHook() = {
-    Runtime.getRuntime.addShutdownHook(new Thread("auditShutdownThread") {
+    Runtime.getRuntime.addShutdownHook(new Thread("kafkaAuditShutdownThread") {
       override def run() {
         info("System is shutting down. Waiting for audit consumer to shut down.")
         auditShutdown.set(true)
@@ -198,7 +176,7 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
           info("Audit consumer has been shut down")
         } catch {
           case _: InterruptedException =>
-            warn("Audit consumer shutdown has been interrupted during shutdown")
+            warn("Audit consumer shutdown has been interrupted")
         }
 
       }
@@ -206,11 +184,22 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
   }
 }
 
+class AuditRebalanceListener(auditor: Auditor) extends ConsumerRebalanceListener {
+  private val auditConsumerHost = InetAddress.getLocalHost.getCanonicalHostName
 
-object AuditMessageType extends Enumeration {
-  type AuditMessageType = Value
-  val GroupMetadata, GroupOffsets, PartitionAssignment, OffsetCommit, AuditPartitionRevoked, AuditPartitionAssigned = Value
+  override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
+    partitions.asScala.foreach { tp =>
+      val o = AuditPartitionsRevokedAuditMessage(System.currentTimeMillis(), auditConsumerHost, tp.topic(), tp.partition())
+      auditor.sendAuditInfo(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
+    }
+  }
 
+  override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
+    partitions.asScala.foreach { tp =>
+      val o = AuditPartitionsAssignedAuditMessage(System.currentTimeMillis(), auditConsumerHost, tp.topic(), tp.partition())
+      auditor.sendAuditInfo(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
+    }
+  }
 }
 
 object AuditType extends Enumeration {
@@ -219,8 +208,11 @@ object AuditType extends Enumeration {
 
   def valueConverter = new ValueConverter[AuditType] {
     override def valueType(): Class[_ <: AuditType] = classOf[AuditType]
+
     override def convert(value: String): AuditType = AuditType.withName(value)
+
     override def valuePattern(): String = AuditType.values mkString ","
   }
 }
+
 

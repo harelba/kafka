@@ -7,6 +7,12 @@ import org.apache.kafka.common.record.TimestampType
 
 import scala.collection.JavaConverters._
 
+object AuditMessageType extends Enumeration {
+  type AuditMessageType = Value
+  val GroupMetadata, GroupOffsets, PartitionAssignment, OffsetCommit, AuditPartitionRevoked, AuditPartitionAssigned = Value
+
+}
+
 case class GroupMetadataAuditMessage(originalKeyTimestamp: Long,
                                      originalKeyTimestampType: TimestampType,
                                      groupId: String,
@@ -22,16 +28,16 @@ case class GroupMetadataAuditMessage(originalKeyTimestamp: Long,
   )
 
   private val eventTimestampInfo = currentStateTimestamp match {
-    case Some(ts) => Map("@timestamp" -> ts, "kafkaTimestampType" -> "GroupMetadataTime")
-    case None => Map("@timestamp" -> originalKeyTimestamp, "kafkaTimestampType" -> originalKeyTimestampType)
+    case Some(ts) => Map("@timestamp" -> ts, "auditEventTimestampType" -> "GroupMetadataTime")
+    case None => Map("@timestamp" -> originalKeyTimestamp, "auditEventTimestampType" -> originalKeyTimestampType)
   }
 
   val asJavaMap = (Map(
     "groupId" -> groupId,
     "generation" -> generationId,
-    "protocolType" -> protocolType.orNull,
+    "protocolType" -> protocolType.getOrElse(null),
     "currentState" -> currentStateName,
-    "currentStateTimestamp" -> currentStateTimestamp.orNull,
+    "currentStateTimestamp" -> currentStateTimestamp.getOrElse(null),
     "canRebalance" -> canRebalance
   ) ++ eventTimestampInfo ++ recordTimestampInfo).asJava
 }
@@ -50,7 +56,7 @@ case class GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage: GroupM
     "offset" -> offset,
     "metadata" -> metadata,
     "commitTimestamp" -> commitTimestamp,
-    "expireTimestamp" -> expireTimestamp.orNull
+    "expireTimestamp" -> expireTimestamp.getOrElse(null)
   )).asJava
 }
 
@@ -75,7 +81,7 @@ case class GroupMetadataMemberMetadataAuditMessage(groupMetadataAuditMessage: Gr
     "protocolType" -> protocolType,
     "supportedProtocols" -> supportedProtocols.map({
       case (protocol, metadata) => Map("protocol" -> protocol, "metadata" -> Base64.getEncoder.encode(metadata)).asJava
-    }),
+    }).asJava,
     "topic" -> topic,
     "partition" -> partition,
     "userData" -> Base64.getEncoder.encode(userData)
@@ -100,7 +106,7 @@ case class OffsetCommitAuditMessage(timestamp: Long,
     "leaderEpoch" -> leaderEpoch.orElse(null),
     "metadata" -> metadata,
     "commitTimestamp" -> commitTimestamp,
-    "expireTimestamp" -> expireTimestamp.orNull).asJava
+    "expireTimestamp" -> expireTimestamp.getOrElse(null)).asJava
 }
 
 case class AuditPartitionsRevokedAuditMessage(timestamp: Long,auditConsumerHost: String,topic: String,partition:Int) {
@@ -120,3 +126,4 @@ case class AuditPartitionsAssignedAuditMessage(timestamp: Long,auditConsumerHost
     "partition" -> partition
   ).asJava
 }
+
