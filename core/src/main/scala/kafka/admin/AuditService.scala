@@ -5,13 +5,13 @@ import java.nio.ByteBuffer
 import java.time.Duration
 import java.time.temporal.ChronoUnit
 import java.util
+import java.util.Properties
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.{Base64, Properties}
 
 import joptsimple.ValueConverter
+import kafka.admin.AuditMessageType.AuditMessageType
 import kafka.admin.AuditType.AuditType
-import kafka.admin.ConsumerAuditMessageType.ConsumerAuditMessageType
 import kafka.coordinator.group.{GroupMetadataKey, GroupMetadataManager, OffsetKey}
 import kafka.utils.{Json, Logging}
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
@@ -23,9 +23,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Time
 import org.slf4j.LoggerFactory
 
-import scala.collection.JavaConversions
 import scala.collection.JavaConverters._
-
 
 class AuditService(auditType: AuditType, bootstrapServer: String) extends Logging {
   private lazy val auditLogger = LoggerFactory.getLogger("consumer_groups_audit_logger")
@@ -79,18 +77,18 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
         Option(value) match {
           case Some(v) =>
             val offsetMessage = GroupMetadataManager.readOffsetMessageValue(ByteBuffer.wrap(value))
-            val commitTimestamp = offsetMessage.commitTimestamp
-            val m = Map(
-              "@timestamp" -> commitTimestamp,
-              "group" -> groupTopicPartition.group,
-              "topic" -> groupTopicPartition.topicPartition.topic(),
-              "partition" -> groupTopicPartition.topicPartition.partition(),
-              "offset" -> offsetMessage.offset,
-              "leaderEpoch" -> offsetMessage.leaderEpoch.orElse(null),
-              "metadata" -> offsetMessage.metadata,
-              "commitTimestamp" -> offsetMessage.commitTimestamp,
-              "expireTimestamp" -> offsetMessage.expireTimestamp.getOrElse(null))
-            sendAsJsonToAuditLog(ConsumerAuditMessageType.OffsetCommit, m)
+            val o = OffsetCommitAuditMessage(
+              offsetMessage.commitTimestamp,
+              groupTopicPartition.group,
+              groupTopicPartition.topicPartition.topic(),
+              groupTopicPartition.topicPartition.partition(),
+              offsetMessage.offset,
+              Option(offsetMessage.leaderEpoch.orElse(null)),
+              offsetMessage.metadata,
+              offsetMessage.commitTimestamp,
+              offsetMessage.expireTimestamp
+            )
+            sendAsJsonToAuditLog(AuditMessageType.OffsetCommit, o.asJavaMap)
           case None => //
         }
       case _ => // no-op
@@ -106,53 +104,48 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
           case Some(v) =>
             val groupMetadata = GroupMetadataManager.readGroupMessageValue(groupId, ByteBuffer.wrap(r.value), Time.SYSTEM)
 
-            val eventTimestampInfo = groupMetadata.currentStateTimestamp match {
-              case Some(ts) => Map("@timestamp" -> ts, "kafkaTimestampType" -> "GroupMetadataTime")
-              case None => Map("@timestamp" -> r.timestamp(), "kafkaTimestampType" -> r.timestampType().toString)
-            }
-            val recordTimestampInfo = Map("originalKeyTimestamp" -> r.timestamp(), "originalKeyTimestampType" -> r.timestampType().toString)
+            val groupMetadataAuditMessage = GroupMetadataAuditMessage(
+              r.timestamp(),
+              r.timestampType(),
+              groupId,
+              groupMetadata.generationId,
+              groupMetadata.protocolType,
+              groupMetadata.currentState.getClass.getSimpleName,
+              groupMetadata.currentStateTimestamp,
+              groupMetadata.canRebalance
+            )
 
-            val groupMetadataAsMap = {
-              Map(
-                "groupId" -> groupId,
-                "generation" -> groupMetadata.generationId,
-                "protocolType" -> groupMetadata.protocolType.getOrElse(null),
-                "currentState" -> groupMetadata.currentState.getClass.getSimpleName,
-                "currentStateTimestamp" -> groupMetadata.currentStateTimestamp.getOrElse(null),
-                "canRebalance" -> groupMetadata.canRebalance
-              ) ++ eventTimestampInfo ++ recordTimestampInfo
-            }
-
-            sendAsJsonToAuditLog(ConsumerAuditMessageType.GroupMetadata, groupMetadataAsMap)
+            sendAsJsonToAuditLog(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap)
 
             for ((topicPartition, offsetAndMetadata) <- groupMetadata.allOffsets) {
-              val m = groupMetadataAsMap ++ Map(
-                "topic" -> topicPartition.topic(),
-                "partition" -> topicPartition.partition(),
-                "offset" -> offsetAndMetadata.offset,
-                "metadata" -> offsetAndMetadata.metadata,
-                "commitTimestamp" -> offsetAndMetadata.commitTimestamp,
-                "expireTimestamp" -> offsetAndMetadata.expireTimestamp.getOrElse(null))
-              sendAsJsonToAuditLog(ConsumerAuditMessageType.GroupOffsets, m)
+              val o = GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage,
+                topicPartition.topic(),
+                topicPartition.partition(),
+                offsetAndMetadata.offset,
+                offsetAndMetadata.metadata,
+                offsetAndMetadata.commitTimestamp,
+                offsetAndMetadata.expireTimestamp)
+
+              sendAsJsonToAuditLog(AuditMessageType.GroupOffsets, o.asJavaMap)
             }
 
             for (memberMetadata <- groupMetadata.allMemberMetadata) {
               val assignment = ConsumerProtocol.deserializeAssignment(ByteBuffer.wrap(memberMetadata.assignment))
+
               for (pt <- assignment.partitions().asScala) {
-                val m = groupMetadataAsMap ++ Map(
-                  "memberId" -> memberMetadata.memberId,
-                  "clientId" -> memberMetadata.clientId,
-                  "clientHost" -> memberMetadata.clientHost,
-                  "rebalanceTimeoutMs" -> memberMetadata.rebalanceTimeoutMs,
-                  "sessionTimeoutMs" -> memberMetadata.sessionTimeoutMs,
-                  "protocolType" -> memberMetadata.protocolType,
-                  "supportedProtocols" -> memberMetadata.supportedProtocols.map({
-                    case (protocol,metadata) => mapAsJavaMapConverter(Map("protocol" -> protocol, "metadata" -> Base64.getEncoder.encode(metadata)))
-                  }),
-                  "topic" -> pt.topic(),
-                  "partition" -> pt.partition(),
-                  "userData" -> Base64.getEncoder.encode(assignment.userData()))
-                sendAsJsonToAuditLog(ConsumerAuditMessageType.PartitionAssignment, m)
+                val o = GroupMetadataMemberMetadataAuditMessage(groupMetadataAuditMessage,
+                  memberMetadata.memberId,
+                  memberMetadata.clientId,
+                  memberMetadata.clientHost,
+                  memberMetadata.rebalanceTimeoutMs,
+                  memberMetadata.sessionTimeoutMs,
+                  memberMetadata.protocolType,
+                  memberMetadata.supportedProtocols,
+                  pt.topic(),
+                  pt.partition(),
+                  assignment.userData())
+
+                sendAsJsonToAuditLog(AuditMessageType.PartitionAssignment, o.asJavaMap)
               }
             }
           case None => //
@@ -176,25 +169,21 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
   private val auditRebalanceListener = new ConsumerRebalanceListener {
     override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
       partitions.asScala.foreach { tp =>
-        val m = Map("@timestamp" -> System.currentTimeMillis(), "auditConsumerHost" -> auditConsumerHost, "topic" -> tp.topic(), "partition" -> tp.partition())
-        sendAsJsonToAuditLog(ConsumerAuditMessageType.AuditPartitionRevoked, m)
+        val o = AuditPartitionsRevokedAuditMessage(System.currentTimeMillis(),auditConsumerHost,tp.topic(),tp.partition())
+        sendAsJsonToAuditLog(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
       }
     }
 
     override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
       partitions.asScala.foreach { tp =>
-        val m = Map("@timestamp" -> System.currentTimeMillis(), "auditConsumerHost" -> auditConsumerHost, "topic" -> tp.topic(), "partition" -> tp.partition())
-        sendAsJsonToAuditLog(ConsumerAuditMessageType.AuditPartitionAssigned, m)
+        val o = AuditPartitionsAssignedAuditMessage(System.currentTimeMillis(),auditConsumerHost,tp.topic(),tp.partition())
+        sendAsJsonToAuditLog(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
       }
     }
-
-    private def topicPartitionToMap(tp: TopicPartition) = Map("topic" -> tp.topic(), "partition" -> tp.partition())
   }
 
-  private def sendAsJsonToAuditLog(messageType: ConsumerAuditMessageType, m: Map[String, Any]): Unit = {
-    val messageTypePair = "consumerAuditMessageType" -> messageType.toString
-    val jm = JavaConversions.mapAsJavaMap(m + messageTypePair)
-    val s = Json.encodeAsString(jm)
+  private def sendAsJsonToAuditLog(messageType: AuditMessageType, javaMap: util.Map[String, Any]): Unit = {
+    val s = Json.encodeAsString(javaMap.asScala.update("kafkaAuditMessageType",messageType.toString))
     auditLogger.info(s)
   }
 
@@ -218,8 +207,8 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
 }
 
 
-object ConsumerAuditMessageType extends Enumeration {
-  type ConsumerAuditMessageType = Value
+object AuditMessageType extends Enumeration {
+  type AuditMessageType = Value
   val GroupMetadata, GroupOffsets, PartitionAssignment, OffsetCommit, AuditPartitionRevoked, AuditPartitionAssigned = Value
 
 }
@@ -230,9 +219,7 @@ object AuditType extends Enumeration {
 
   def valueConverter = new ValueConverter[AuditType] {
     override def valueType(): Class[_ <: AuditType] = classOf[AuditType]
-
     override def convert(value: String): AuditType = AuditType.withName(value)
-
     override def valuePattern(): String = AuditType.values mkString ","
   }
 }
