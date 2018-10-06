@@ -28,10 +28,6 @@ import scala.collection.JavaConverters._
 
 
 class AuditService(auditType: AuditType, bootstrapServer: String) extends Logging {
-
-  // TODO Should send all per-group committed offsets to some metric backend
-  // TODO Should periodically ask the brokers to provide per-topic end-offsets, and send them to some metric backend
-
   private lazy val auditLogger = LoggerFactory.getLogger("consumer_groups_audit_logger")
 
   private val auditConsumer = createAuditConsumer(bootstrapServer)
@@ -150,7 +146,9 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
                   "rebalanceTimeoutMs" -> memberMetadata.rebalanceTimeoutMs,
                   "sessionTimeoutMs" -> memberMetadata.sessionTimeoutMs,
                   "protocolType" -> memberMetadata.protocolType,
-                  // TODO Add supportedProtocols
+                  "supportedProtocols" -> memberMetadata.supportedProtocols.map({
+                    case (protocol,metadata) => mapAsJavaMapConverter(Map("protocol" -> protocol, "metadata" -> Base64.getEncoder.encode(metadata)))
+                  }),
                   "topic" -> pt.topic(),
                   "partition" -> pt.partition(),
                   "userData" -> Base64.getEncoder.encode(assignment.userData()))
