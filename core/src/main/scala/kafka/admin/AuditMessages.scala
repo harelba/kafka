@@ -3,6 +3,7 @@ package kafka.admin
 import java.nio.ByteBuffer
 import java.util.Base64
 
+import kafka.admin.AuditEventTimestampSource.AuditEventTimestampSource
 import org.apache.kafka.common.record.TimestampType
 
 import scala.collection.JavaConverters._
@@ -13,7 +14,20 @@ object AuditMessageType extends Enumeration {
 
 }
 
-case class GroupMetadataAuditMessage(originalKeyTimestamp: Long,
+object AuditEventTimestampSource extends Enumeration {
+  type AuditEventTimestampSource = Value
+  val CreateTimestamp,LogAppendTimestamp,CommitTimestamp,AuditProcessingTime,GroupMetadataTimestamp = Value
+}
+
+case class AuditEventTimestampInfo(eventTimestamp: Long,
+                                   eventTimestampSource: AuditEventTimestampSource) {
+  val asJavaMap = Map(
+    "auditEventTimestamp" -> eventTimestamp,
+    "auditEventTimestampType" -> eventTimestampSource.toString).asJava
+}
+
+case class GroupMetadataAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
+                                     originalKeyTimestamp: Long,
                                      originalKeyTimestampType: TimestampType,
                                      groupId: String,
                                      generationId: Int,
@@ -27,11 +41,6 @@ case class GroupMetadataAuditMessage(originalKeyTimestamp: Long,
     "originalKeyTimestampType" -> originalKeyTimestampType
   )
 
-  private val eventTimestampInfo = currentStateTimestamp match {
-    case Some(ts) => Map("@timestamp" -> ts, "auditEventTimestampType" -> "GroupMetadataTime")
-    case None => Map("@timestamp" -> originalKeyTimestamp, "auditEventTimestampType" -> originalKeyTimestampType)
-  }
-
   val asJavaMap = (Map(
     "groupId" -> groupId,
     "generation" -> generationId,
@@ -39,7 +48,7 @@ case class GroupMetadataAuditMessage(originalKeyTimestamp: Long,
     "currentState" -> currentStateName,
     "currentStateTimestamp" -> currentStateTimestamp.getOrElse(null),
     "canRebalance" -> canRebalance
-  ) ++ eventTimestampInfo ++ recordTimestampInfo).asJava
+  ) ++ eventTimestampInfo.asJavaMap.asScala ++ recordTimestampInfo).asJava
 }
 
 case class GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage: GroupMetadataAuditMessage,
@@ -88,7 +97,7 @@ case class GroupMetadataMemberMetadataAuditMessage(groupMetadataAuditMessage: Gr
   )).asJava
 }
 
-case class OffsetCommitAuditMessage(timestamp: Long,
+case class OffsetCommitAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
                                     groupId: String,
                                     topic: String,
                                     partition: Int,
@@ -97,8 +106,7 @@ case class OffsetCommitAuditMessage(timestamp: Long,
                                     metadata: String,
                                     commitTimestamp: Long,
                                     expireTimestamp: Option[Long]) {
-  val asJavaMap = Map(
-    "@timestamp" -> timestamp,
+  val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "group" -> groupId,
     "topic" -> topic,
     "partition" -> partition,
@@ -106,10 +114,10 @@ case class OffsetCommitAuditMessage(timestamp: Long,
     "leaderEpoch" -> leaderEpoch.orElse(null),
     "metadata" -> metadata,
     "commitTimestamp" -> commitTimestamp,
-    "expireTimestamp" -> expireTimestamp.getOrElse(null)).asJava
+    "expireTimestamp" -> expireTimestamp.getOrElse(null))).asJava
 }
 
-case class AuditPartitionsRevokedAuditMessage(timestamp: Long,auditConsumerHost: String,topic: String,partition:Int) {
+case class AuditPartitionsRevokedAuditMessage(timestamp: Long, auditConsumerHost: String, topic: String, partition: Int) {
   val asJavaMap = Map(
     "@timestamp" -> timestamp,
     "auditConsumerHost" -> auditConsumerHost,
@@ -118,7 +126,7 @@ case class AuditPartitionsRevokedAuditMessage(timestamp: Long,auditConsumerHost:
   ).asJava
 }
 
-case class AuditPartitionsAssignedAuditMessage(timestamp: Long,auditConsumerHost: String,topic: String,partition:Int) {
+case class AuditPartitionsAssignedAuditMessage(timestamp: Long, auditConsumerHost: String, topic: String, partition: Int) {
   val asJavaMap = Map(
     "@timestamp" -> timestamp,
     "auditConsumerHost" -> auditConsumerHost,

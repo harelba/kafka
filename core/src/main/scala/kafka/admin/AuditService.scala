@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import joptsimple.ValueConverter
 import kafka.admin.AuditType.AuditType
+import kafka.common.OffsetAndMetadata
 import kafka.coordinator.group.{GroupMetadataKey, GroupMetadataManager, OffsetKey}
 import kafka.utils.Logging
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
@@ -18,12 +19,13 @@ import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRebalanceListe
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.WakeupException
 import org.apache.kafka.common.internals.Topic
+import org.apache.kafka.common.record.TimestampType
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Time
 
 import scala.collection.JavaConverters._
 
-class AuditService(auditType: AuditType, bootstrapServer: String) extends Logging {
+class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Time) extends Logging {
   private val auditor = new Auditor()
 
   private val auditConsumer = createAuditConsumer(bootstrapServer)
@@ -42,12 +44,13 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
       while (!auditShutdown.get()) {
         val records = auditConsumer.poll(Duration.of(Long.MaxValue, ChronoUnit.MILLIS)).asScala
         for (r <- records) {
-          auditType match {
+          for (auditType <- auditTypes) {
             case AuditType.GroupMetadata => auditGroupMetadataRecord(r)
             case AuditType.OffsetCommits => auditOffsetCommitRecord(r)
           }
         }
       }
+      info("Audit consumer loop has ended")
     }
     catch {
       case e: WakeupException =>
@@ -74,8 +77,11 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
         Option(value) match {
           case Some(v) =>
             val offsetMessage = GroupMetadataManager.readOffsetMessageValue(ByteBuffer.wrap(value))
+
+            val eventTimestampInfo = calculateOffsetCommitEventTimestampInfo(offsetMessage)
+
             val o = OffsetCommitAuditMessage(
-              offsetMessage.commitTimestamp,
+              eventTimestampInfo,
               groupTopicPartition.group,
               groupTopicPartition.topicPartition.topic(),
               groupTopicPartition.topicPartition.partition(),
@@ -99,9 +105,12 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
         val value = r.value
         Option(value) match {
           case Some(v) =>
-            val groupMetadata = GroupMetadataManager.readGroupMessageValue(groupId, ByteBuffer.wrap(r.value), Time.SYSTEM)
+            val groupMetadata = GroupMetadataManager.readGroupMessageValue(groupId, ByteBuffer.wrap(r.value), time)
+
+            val eventTimestampInfo = calculateGroupMetadataEventTimestampInfo(r, groupMetadata.currentStateTimestamp)
 
             val groupMetadataAuditMessage = GroupMetadataAuditMessage(
+              eventTimestampInfo,
               r.timestamp(),
               r.timestampType(),
               groupId,
@@ -182,6 +191,29 @@ class AuditService(auditType: AuditType, bootstrapServer: String) extends Loggin
       }
     })
   }
+
+  private def calculateOffsetCommitEventTimestampInfo(offsetMessage: OffsetAndMetadata) = {
+    AuditEventTimestampInfo(offsetMessage.commitTimestamp,AuditEventTimestampSource.CommitTimestamp)
+  }
+
+  private def calculateGroupMetadataEventTimestampInfo(r: ConsumerRecord[Array[Byte], Array[Byte]],
+                                                       currentStateTimestamp: Option[Long]): AuditEventTimestampInfo = {
+    currentStateTimestamp match {
+      case Some(ts) =>
+        AuditEventTimestampInfo(ts, AuditEventTimestampSource.GroupMetadataTimestamp)
+      case None => {
+        r.timestampType() match {
+          case TimestampType.NO_TIMESTAMP_TYPE =>
+            AuditEventTimestampInfo(time.milliseconds(), AuditEventTimestampSource.AuditProcessingTime)
+          case TimestampType.CREATE_TIME =>
+            AuditEventTimestampInfo(r.timestamp(), AuditEventTimestampSource.CreateTimestamp)
+          case TimestampType.LOG_APPEND_TIME =>
+            AuditEventTimestampInfo(r.timestamp(), AuditEventTimestampSource.LogAppendTimestamp)
+        }
+      }
+    }
+
+  }
 }
 
 class AuditRebalanceListener(auditor: Auditor) extends ConsumerRebalanceListener {
@@ -208,9 +240,7 @@ object AuditType extends Enumeration {
 
   def valueConverter = new ValueConverter[AuditType] {
     override def valueType(): Class[_ <: AuditType] = classOf[AuditType]
-
     override def convert(value: String): AuditType = AuditType.withName(value)
-
     override def valuePattern(): String = AuditType.values mkString ","
   }
 }

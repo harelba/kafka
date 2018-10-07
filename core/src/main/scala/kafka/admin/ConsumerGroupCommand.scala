@@ -28,7 +28,7 @@ import org.apache.kafka.clients.admin._
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.clients.{CommonClientConfigs, admin}
 import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.{KafkaException, Node, TopicPartition}
 
 import scala.collection.JavaConverters._
@@ -127,21 +127,21 @@ object ConsumerGroupCommand extends Logging {
     // `consumer` is only needed for `describe`, so we instantiate it lazily
     private var consumer: KafkaConsumer[String, String] = _
 
-    def audit() = {
-      val bootstrapServer = opts.options.valueOf(opts.bootstrapServerOpt)
-      val auditType = opts.options.valueOf(opts.auditTypeOpt)
-
-      val auditService = new AuditService(auditType,bootstrapServer)
-
-      auditService.run()
-    }
-
     def listGroups(): List[String] = {
       val result = adminClient.listConsumerGroups(
         withTimeoutMs(new ListConsumerGroupsOptions))
 
         val listings = result.all.get.asScala
         listings.map(_.groupId).toList
+    }
+
+    def audit() = {
+      val bootstrapServer = opts.options.valueOf(opts.bootstrapServerOpt)
+      val auditTypes = opts.options.valuesOf(opts.auditTypeOpt).asScala.toList
+
+      val auditService = new AuditService(auditTypes,bootstrapServer,Time.SYSTEM)
+
+      auditService.run()
     }
 
     private def shouldPrintMemberState(group: String, state: Option[String], numRows: Option[Int]): Boolean = {
@@ -785,7 +785,7 @@ object ConsumerGroupCommand extends Logging {
     val stateOpt = parser.accepts("state", StateDoc)
                          .availableIf(describeOpt)
     val auditOpt = parser.accepts("audit","Run a service which emits rebalancing and offset commits information in a machine-readable way")
-    val auditTypeOpt = parser.accepts("audit-type","Choose which types of events to audit")
+    val auditTypeOpt = parser.accepts("audit-types","Choose which types of events to audit")
       .availableIf(auditOpt)
       .withRequiredArg().withValuesConvertedBy(AuditType.valueConverter).defaultsTo(AuditType.GroupMetadata)
 
