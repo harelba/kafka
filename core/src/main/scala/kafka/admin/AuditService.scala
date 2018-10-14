@@ -24,29 +24,33 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Time
 
 import scala.collection.JavaConverters._
+import scala.util.{Failure, Success, Try}
+import scala.util.control.NonFatal
 
-class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Time) extends Logging {
-  private val auditor = new Auditor()
-
+class AuditService(auditTypes: List[AuditType], bootstrapServer: String, resolveClientHostIps:Boolean,time: Time) extends Logging {
   private val auditConsumer = createAuditConsumer(bootstrapServer)
 
   private val auditShutdown = new AtomicBoolean(false)
   private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
 
-  def run() = {
-    info("Starting audit service")
+  def run(auditor: Auditor) = {
+    info(s"Starting audit service. Auditor in use is $auditor")
 
     addAuditShutdownHook()
 
     try {
       info(s"Audit service subscribing to topic ${Topic.GROUP_METADATA_TOPIC_NAME}")
-      auditConsumer.subscribe(List(Topic.GROUP_METADATA_TOPIC_NAME).asJavaCollection, auditRebalanceListener)
+      auditConsumer.subscribe(List(Topic.GROUP_METADATA_TOPIC_NAME).asJavaCollection, new AuditRebalanceListener(auditor))
       while (!auditShutdown.get()) {
         val records = auditConsumer.poll(Duration.of(Long.MaxValue, ChronoUnit.MILLIS)).asScala
         for (r <- records) {
-          for (auditType <- auditTypes) {
-            case AuditType.GroupMetadata => auditGroupMetadataRecord(r)
-            case AuditType.OffsetCommits => auditOffsetCommitRecord(r)
+          try {
+            handleRecordAudit(auditor,r)
+          }
+          catch {
+            case NonFatal(e) => {
+              error("Could not audit record. Skipping", e)
+            }
           }
         }
       }
@@ -69,7 +73,16 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
     }
   }
 
-  private def auditOffsetCommitRecord(r: ConsumerRecord[Array[Byte], Array[Byte]]): Unit = {
+  private def handleRecordAudit(auditor: Auditor, r: ConsumerRecord[Array[Byte], Array[Byte]]) = {
+    for (auditType <- auditTypes) {
+      auditType match {
+        case AuditType.GroupMetadata => auditGroupMetadataRecord(auditor, r)
+        case AuditType.OffsetCommits => auditOffsetCommitRecord(auditor, r)
+      }
+    }
+  }
+
+  private def auditOffsetCommitRecord(auditor: Auditor, r: ConsumerRecord[Array[Byte], Array[Byte]]): Unit = {
     Option(r.key).map(key => GroupMetadataManager.readMessageKey(ByteBuffer.wrap(key))).foreach {
       case offsetKey: OffsetKey =>
         val groupTopicPartition = offsetKey.key
@@ -91,14 +104,14 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
               offsetMessage.commitTimestamp,
               offsetMessage.expireTimestamp
             )
-            auditor.sendAuditInfo(AuditMessageType.OffsetCommit, o.asJavaMap)
+            auditor.audit(AuditMessageType.OffsetCommit, o.asJavaMap)
           case None => //
         }
       case _ => // no-op
     }
   }
 
-  private def auditGroupMetadataRecord(r: ConsumerRecord[Array[Byte], Array[Byte]]): Unit = {
+  private def auditGroupMetadataRecord(auditor: Auditor, r: ConsumerRecord[Array[Byte], Array[Byte]]): Unit = {
     Option(r.key).map(key => GroupMetadataManager.readMessageKey(ByteBuffer.wrap(key))).foreach {
       case groupMetadataKey: GroupMetadataKey =>
         val groupId = groupMetadataKey.key
@@ -121,7 +134,7 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
               groupMetadata.canRebalance
             )
 
-            auditor.sendAuditInfo(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap)
+            auditor.audit(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap)
 
             for ((topicPartition, offsetAndMetadata) <- groupMetadata.allOffsets) {
               val o = GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage,
@@ -132,7 +145,7 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
                 offsetAndMetadata.commitTimestamp,
                 offsetAndMetadata.expireTimestamp)
 
-              auditor.sendAuditInfo(AuditMessageType.GroupOffsets, o.asJavaMap)
+              auditor.audit(AuditMessageType.GroupOffsets, o.asJavaMap)
             }
 
             for (memberMetadata <- groupMetadata.allMemberMetadata) {
@@ -142,7 +155,7 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
                 val o = GroupMetadataMemberMetadataAuditMessage(groupMetadataAuditMessage,
                   memberMetadata.memberId,
                   memberMetadata.clientId,
-                  memberMetadata.clientHost,
+                  resolveClientHostIfNeeded(memberMetadata.clientHost),
                   memberMetadata.rebalanceTimeoutMs,
                   memberMetadata.sessionTimeoutMs,
                   memberMetadata.protocolType,
@@ -151,12 +164,33 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
                   pt.partition(),
                   assignment.userData())
 
-                auditor.sendAuditInfo(AuditMessageType.PartitionAssignment, o.asJavaMap)
+                auditor.audit(AuditMessageType.PartitionAssignment, o.asJavaMap)
               }
             }
           case None => //
         }
       case _ => // separately parse offset commits
+    }
+  }
+
+  private def resolveClientHostIfNeeded(clientHost: String) : String = {
+    try {
+      val cleanClientHost = if (clientHost.startsWith("/")) clientHost.substring(1) else clientHost
+      if (resolveClientHostIps) {
+        Try(InetAddress.getByName(cleanClientHost)) match {
+          case Success(a) => a.getHostName
+          case Failure(e) => cleanClientHost
+        }
+      }
+      else {
+        cleanClientHost
+      }
+    }
+    catch {
+      case NonFatal(e) => {
+        warn(s"Could not resolve client host ${clientHost}. Leaving it as it is",e)
+        clientHost
+      }
     }
   }
 
@@ -171,8 +205,6 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
     properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserializer)
     new KafkaConsumer[Array[Byte], Array[Byte]](properties)
   }
-
-  private val auditRebalanceListener = new AuditRebalanceListener(auditor)
 
   private def addAuditShutdownHook() = {
     Runtime.getRuntime.addShutdownHook(new Thread("kafkaAuditShutdownThread") {
@@ -193,7 +225,7 @@ class AuditService(auditTypes: List[AuditType], bootstrapServer: String,time: Ti
   }
 
   private def calculateOffsetCommitEventTimestampInfo(offsetMessage: OffsetAndMetadata) = {
-    AuditEventTimestampInfo(offsetMessage.commitTimestamp,AuditEventTimestampSource.CommitTimestamp)
+    AuditEventTimestampInfo(offsetMessage.commitTimestamp, AuditEventTimestampSource.CommitTimestamp)
   }
 
   private def calculateGroupMetadataEventTimestampInfo(r: ConsumerRecord[Array[Byte], Array[Byte]],
@@ -222,14 +254,14 @@ class AuditRebalanceListener(auditor: Auditor) extends ConsumerRebalanceListener
   override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
       val o = AuditPartitionsRevokedAuditMessage(System.currentTimeMillis(), auditConsumerHost, tp.topic(), tp.partition())
-      auditor.sendAuditInfo(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
+      auditor.audit(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
     }
   }
 
   override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
       val o = AuditPartitionsAssignedAuditMessage(System.currentTimeMillis(), auditConsumerHost, tp.topic(), tp.partition())
-      auditor.sendAuditInfo(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
+      auditor.audit(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
     }
   }
 }
@@ -242,6 +274,17 @@ object AuditType extends Enumeration {
     override def valueType(): Class[_ <: AuditType] = classOf[AuditType]
     override def convert(value: String): AuditType = AuditType.withName(value)
     override def valuePattern(): String = AuditType.values mkString ","
+  }
+}
+
+object AuditTarget extends Enumeration {
+  type AuditTarget = Value
+  val StdOut,LogFile = Value
+
+  def valueConverter = new ValueConverter[AuditTarget] {
+    override def valueType(): Class[_ <: AuditTarget] = classOf[AuditTarget]
+    override def convert(value: String): AuditTarget = AuditTarget.withName(value)
+    override def valuePattern(): String = AuditTarget.values mkString ","
   }
 }
 

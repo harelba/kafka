@@ -60,8 +60,10 @@ object ConsumerGroupCommand extends Logging {
         consumerGroupService.describeGroup()
       else if (opts.options.has(opts.deleteOpt))
         consumerGroupService.deleteGroups()
-      else if (opts.options.has(opts.auditOpt))
+      else if (opts.options.has(opts.auditOpt)) {
+
         consumerGroupService.audit()
+      }
       else if (opts.options.has(opts.resetOffsetsOpt)) {
         val offsetsToReset = consumerGroupService.resetOffsets()
         if (opts.options.has(opts.exportOpt)) {
@@ -137,11 +139,19 @@ object ConsumerGroupCommand extends Logging {
 
     def audit() = {
       val bootstrapServer = opts.options.valueOf(opts.bootstrapServerOpt)
-      val auditTypes = opts.options.valuesOf(opts.auditTypeOpt).asScala.toList
+      val auditTypes = opts.options.valuesOf(opts.auditTypesOpt).asScala.toList
 
-      val auditService = new AuditService(auditTypes,bootstrapServer,Time.SYSTEM)
+      val resolveClientHostIps = opts.options.has(opts.auditResolveClientHostIpsOpt)
 
-      auditService.run()
+      val auditService = new AuditService(auditTypes,bootstrapServer,resolveClientHostIps,Time.SYSTEM)
+
+      val auditTarget = opts.options.valueOf(opts.auditTargetOpt)
+
+      val auditor = auditTarget match {
+        case AuditTarget.StdOut => new StdOutAuditor()
+        case AuditTarget.LogFile => new Log4JAuditor()
+      }
+      auditService.run(auditor)
     }
 
     private def shouldPrintMemberState(group: String, state: Option[String], numRows: Option[Int]): Boolean = {
@@ -722,6 +732,7 @@ object ConsumerGroupCommand extends Logging {
       "Example: --bootstrap-server localhost:9092 --describe --group group1 --offsets"
     val StateDoc = "Describe the group state. This option may be used with '--describe' and '--bootstrap-server' options only." + nl +
       "Example: --bootstrap-server localhost:9092 --describe --group group1 --state"
+    val AuditDoc = "Run a service which emits rebalancing and offset commits information in a machine-readable way"
 
     val parser = new OptionParser(false)
     val bootstrapServerOpt = parser.accepts("bootstrap-server", BootstrapServerDoc)
@@ -784,11 +795,16 @@ object ConsumerGroupCommand extends Logging {
                            .availableIf(describeOpt)
     val stateOpt = parser.accepts("state", StateDoc)
                          .availableIf(describeOpt)
-    val auditOpt = parser.accepts("audit","Run a service which emits rebalancing and offset commits information in a machine-readable way")
-    val auditTypeOpt = parser.accepts("audit-types","Choose which types of events to audit")
+    val auditOpt = parser.accepts("audit",AuditDoc)
+    val auditTypesOpt = parser.accepts("audit-types","Choose which types of events to audit")
       .availableIf(auditOpt)
       .withRequiredArg().withValuesConvertedBy(AuditType.valueConverter).defaultsTo(AuditType.GroupMetadata)
-
+    val auditResolveClientHostIpsOpt = parser
+      .accepts("resolve-client-host-ips","Try to resolve clientHost IP Addresses before auditing them")
+      .availableIf(auditOpt)
+    val auditTargetOpt = parser.accepts("audit-target","Choose the target of the audit process")
+      .availableIf(auditOpt)
+      .withRequiredArg().withValuesConvertedBy(AuditTarget.valueConverter).defaultsTo(AuditTarget.StdOut)
 
     parser.mutuallyExclusive(membersOpt, offsetsOpt, stateOpt, auditOpt)
 
