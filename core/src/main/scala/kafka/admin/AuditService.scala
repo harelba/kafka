@@ -253,14 +253,14 @@ class AuditRebalanceListener(auditor: Auditor) extends ConsumerRebalanceListener
 
   override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
-      val o = AuditPartitionsRevokedAuditMessage(System.currentTimeMillis(), auditConsumerHost, tp.topic(), tp.partition())
+      val o = AuditPartitionsRevokedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(),AuditEventTimestampSource.AuditProcessingTime), auditConsumerHost, tp.topic(), tp.partition())
       auditor.audit(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
     }
   }
 
   override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
-      val o = AuditPartitionsAssignedAuditMessage(System.currentTimeMillis(), auditConsumerHost, tp.topic(), tp.partition())
+      val o = AuditPartitionsAssignedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(),AuditEventTimestampSource.AuditProcessingTime), auditConsumerHost, tp.topic(), tp.partition())
       auditor.audit(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
     }
   }

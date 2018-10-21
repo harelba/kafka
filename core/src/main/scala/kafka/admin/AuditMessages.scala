@@ -117,21 +117,19 @@ case class OffsetCommitAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
     "expireTimestamp" -> expireTimestamp.getOrElse(null))).asJava
 }
 
-case class AuditPartitionsRevokedAuditMessage(timestamp: Long, auditConsumerHost: String, topic: String, partition: Int) {
-  val asJavaMap = Map(
-    "@timestamp" -> timestamp,
+case class AuditPartitionsRevokedAuditMessage(eventTimestampInfo: AuditEventTimestampInfo, auditConsumerHost: String, topic: String, partition: Int) {
+  val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "auditConsumerHost" -> auditConsumerHost,
     "topic" -> topic,
     "partition" -> partition
-  ).asJava
+  )).asJava
 }
 
-case class AuditPartitionsAssignedAuditMessage(timestamp: Long, auditConsumerHost: String, topic: String, partition: Int) {
-  val asJavaMap = Map(
-    "@timestamp" -> timestamp,
+case class AuditPartitionsAssignedAuditMessage(eventTimestampInfo: AuditEventTimestampInfo, auditConsumerHost: String, topic: String, partition: Int) {
+  val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "auditConsumerHost" -> auditConsumerHost,
     "topic" -> topic,
     "partition" -> partition
-  ).asJava
+  )).asJava
 }
 
