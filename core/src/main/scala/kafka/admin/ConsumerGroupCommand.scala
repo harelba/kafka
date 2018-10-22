@@ -176,7 +176,7 @@ object ConsumerGroupCommand extends Logging {
       Try(auditor.initialize(auditTargetConfig)) match {
         case Success(_) => info("Audit target initialization finished")
         case Failure(e:AuditorInitializationException) => {
-          fatal(s"Audit target initialization failed with reason $e. Stopping")
+          fatal(s"Audit target initialization failed with reason $e. Stopping",e)
           throw e
         }
         case Failure(e: Throwable) =>
