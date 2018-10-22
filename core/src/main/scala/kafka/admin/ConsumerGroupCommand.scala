@@ -34,6 +34,7 @@ import org.apache.kafka.common.{KafkaException, Node, TopicPartition}
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 import scala.collection.{Seq, Set}
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object ConsumerGroupCommand extends Logging {
@@ -150,8 +151,38 @@ object ConsumerGroupCommand extends Logging {
       val auditor = auditTarget match {
         case AuditTarget.StdOut => new StdOutAuditor()
         case AuditTarget.LogFile => new Log4JAuditor()
+        case AuditTarget.KafkaTopic => new KafkaTopicAuditor()
       }
-      auditService.run(auditor)
+
+      val auditTargetConfigStr = opts.options.valueOf(opts.auditTargetConfigOpt)
+
+      val auditTargetConfig = Map(auditTargetConfigStr.split(",").map { s =>
+          val parts = s.split(",",1)
+          (parts(0),parts(1))
+        }:_*)
+
+      try {
+        initializeAuditor(auditor,auditTargetConfig)
+        auditService.run(auditor)
+      }
+      catch {
+        case NonFatal(e:AuditorInitializationException) => System.exit(1)
+        case _ => System.exit(2)
+      }
+    }
+
+    private def initializeAuditor(auditor:Auditor,auditTargetConfig: Map[String,String]) = {
+      info(s"Going to initialize audit target $auditor with the following config: $auditTargetConfig")
+      Try(auditor.initialize(auditTargetConfig)) match {
+        case Success(_) => info("Audit target initialization finished")
+        case Failure(e:AuditorInitializationException) => {
+          fatal(s"Audit target initialization failed with reason $e. Stopping")
+          throw e
+        }
+        case Failure(e: Throwable) =>
+          fatal("Audit target initialization failed internally. Stopping",e)
+          throw e
+      }
     }
 
     private def shouldPrintMemberState(group: String, state: Option[String], numRows: Option[Int]): Boolean = {
@@ -805,6 +836,9 @@ object ConsumerGroupCommand extends Logging {
     val auditTargetOpt = parser.accepts("audit-target","Choose the target of the audit process")
       .availableIf(auditOpt)
       .withRequiredArg().withValuesConvertedBy(AuditTarget.valueConverter).defaultsTo(AuditTarget.StdOut)
+    val auditTargetConfigOpt = parser.accepts("audit-target-config","A comma separate key=value list of audit-target specific parameters")
+        .availableIf(auditOpt)
+      .withRequiredArg()
 
     parser.mutuallyExclusive(membersOpt, offsetsOpt, stateOpt, auditOpt)
 
