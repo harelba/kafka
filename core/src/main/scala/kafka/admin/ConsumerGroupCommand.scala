@@ -157,7 +157,7 @@ object ConsumerGroupCommand extends Logging {
       val auditTargetConfigStr = opts.options.valueOf(opts.auditTargetConfigOpt)
 
       val auditTargetConfig = Map(auditTargetConfigStr.split(",").map { s =>
-          val parts = s.split(",",1)
+          val parts = s.split("=",2)
           (parts(0),parts(1))
         }:_*)
 
@@ -838,7 +838,7 @@ object ConsumerGroupCommand extends Logging {
       .withRequiredArg().withValuesConvertedBy(AuditTarget.valueConverter).defaultsTo(AuditTarget.StdOut)
     val auditTargetConfigOpt = parser.accepts("audit-target-config","A comma separate key=value list of audit-target specific parameters")
         .availableIf(auditOpt)
-      .withRequiredArg()
+        .withRequiredArg()
 
     parser.mutuallyExclusive(membersOpt, offsetsOpt, stateOpt, auditOpt)
 
