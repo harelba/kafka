@@ -172,11 +172,7 @@ object ConsumerGroupCommand extends Logging {
       }
 
       val auditTargetConfigStr = opts.options.valueOf(opts.auditTargetConfigOpt)
-
-      val auditTargetConfig = Map(auditTargetConfigStr.split(",").map { s =>
-          val parts = s.split("=",2)
-          (parts(0),parts(1))
-        }:_*)
+      val auditTargetConfig = mapFromString(auditTargetConfigStr)
 
       try {
         initializeAuditor(auditor,auditTargetConfig)
@@ -479,6 +475,13 @@ object ConsumerGroupCommand extends Logging {
           case _ => topicPartition -> LogOffsetResult.Unknown
         }
       }.toMap
+    }
+
+    private def mapFromString(s: String) = {
+      Map(s.trim.split(",").map { s =>
+        val parts = s.split("=",2)
+        (parts(0).trim,parts(1).trim)
+      }:_*)
     }
 
     private def getLogTimestampOffsets(topicPartitions: Seq[TopicPartition], timestamp: java.lang.Long): Map[TopicPartition, LogOffsetResult] = {
@@ -855,7 +858,7 @@ object ConsumerGroupCommand extends Logging {
       .withRequiredArg().withValuesConvertedBy(AuditTarget.valueConverter).defaultsTo(AuditTarget.StdOut)
     val auditTargetConfigOpt = parser.accepts("audit-target-config","A comma separate key=value list of audit-target specific parameters")
         .availableIf(auditOpt)
-        .withRequiredArg()
+        .withRequiredArg().defaultsTo("")
     val auditKafkaClusterIdOpt = parser.accepts("audit-kafka-cluster-id","A string id for the kafka cluster being audited. Will be sent as part of OffsetCommitSnapshots. Defaults to bootstrap-server value")
       .availableIf(auditOpt)
       .withRequiredArg()
@@ -864,7 +867,7 @@ object ConsumerGroupCommand extends Logging {
       .withRequiredArg().defaultsTo("__audit-consumer-group-1")
     val offsetCommitSnapshotSendIntervalMsOpt = parser.accepts("offset-commit-snapshot-send-interval-ms","How often to send offset commits snapshot messages.")
       .availableIf(auditOpt)
-      .withRequiredArg().ofType(classOf[Int]).defaultsTo(10000)
+      .withRequiredArg().ofType(classOf[Int]).defaultsTo(60000)
     val offsetCommitSnapshotCleanupIntervalMsOpt = parser.accepts("offset-commit-snapshot-cleanup-interval-ms","How often to delete stale offset commit snapshots.")
       .availableIf(auditOpt)
       .withRequiredArg().ofType(classOf[Int]).defaultsTo(86400*1000)
