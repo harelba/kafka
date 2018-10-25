@@ -56,7 +56,7 @@ class AuditService(auditTypes: List[AuditType],
                    offsetCommitSnapshotCleanupIntervalMs: Int,
                    time: Time) extends Logging {
 
-  private val auditConsumer = createAuditConsumer(bootstrapServer,auditConsumerGroupId)
+  private val auditConsumer = createAuditConsumer(bootstrapServer, auditConsumerGroupId)
 
   private val auditShutdown = new AtomicBoolean(false)
   private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
@@ -110,8 +110,8 @@ class AuditService(auditTypes: List[AuditType],
         Await.result(closeConsumerFuture, closeTimeout)
       }
       catch {
-        case e:TimeoutException => error("Could not close audit consumer within a reasonable timeout",e)
-        case NonFatal(e1) => error("Error while trying to close audit consumer",e1)
+        case e: TimeoutException => error("Could not close audit consumer within a reasonable timeout", e)
+        case NonFatal(e1) => error("Error while trying to close audit consumer", e1)
       }
       info("Signalling that audit consumer loop has been shut down")
       shutdownLatch.countDown()
@@ -151,7 +151,7 @@ class AuditService(auditTypes: List[AuditType],
     val forDeletion = offsetBreadcrumbs.asScala
       .filter { case (k, v) => v.lastUpdatedAt < tooOldThreshold }
 
-    forDeletion.foreach { case (k,v) =>
+    forDeletion.foreach { case (k, v) =>
       info(s"Cleaning old offset commit snapshots for group/topic/partition $k - Last breadcrumb is $v. Time last seen is ${refTime - v.lastUpdatedAt} ms")
       offsetBreadcrumbs.remove(k)
     }
@@ -166,26 +166,46 @@ class AuditService(auditTypes: List[AuditType],
 
       info("Sending offset commit snapshots")
 
-      val snapshotTimestampInfo = AuditEventTimestampInfo(
-        snapshotTimestamp,
-        AuditEventTimestampSource.SnapshotReportingTimestamp)
-
       val snapshots = for ((groupTopicPartition, breadcrumb) <- offsetBreadcrumbs.asScala)
-        yield OffsetCommitSnapshot(Some(snapshotTimestampInfo),
-          kafkaClusterId,
-          groupTopicPartition.group,
-          groupTopicPartition.topicPartition.topic(),
-          groupTopicPartition.topicPartition.partition(),
-          breadcrumb.commitOffset,
-          breadcrumb.commitTimestamp,
-          "kafka-auditor",
-          hostname,
-          Map())
+        yield {
+          val snapshotTimestampInfo = AuditEventTimestampInfo(breadcrumb.commitTimestamp, AuditEventTimestampSource.CommitTimestamp)
+          OffsetCommitSnapshot(Some(snapshotTimestampInfo),
+            kafkaClusterId,
+            groupTopicPartition.group,
+            groupTopicPartition.topicPartition.topic(),
+            groupTopicPartition.topicPartition.partition(),
+            breadcrumb.commitOffset,
+            breadcrumb.commitTimestamp,
+            "kafka-auditor",
+            hostname,
+            Map())
+
+        }
 
       snapshots.foreach { snapshot =>
         auditor.audit(AuditMessageType.OffsetCommitSnapshot, snapshot.asJavaMap)
       }
       info("Sent offset commit snapshots")
+
+      val topicPartitions = snapshots.map({ x =>
+        new TopicPartition(x.topic, x.partition) -> new java.lang.Long(x.commitTimestamp)
+      }
+      ).toMap
+
+      val offsetsForSnapshotTime = auditConsumer.offsetsForTimes(topicPartitions.asJava).asScala
+      println(offsetsForSnapshotTime)
+
+      offsetsForSnapshotTime.collect {
+        case (tp, oat) if oat != null =>
+          println(s"found non null ${tp} ${oat}")
+          // TODO Should it be CommitTimestamp? or something else?
+          val timestampInfo = AuditEventTimestampInfo(oat.timestamp(), AuditEventTimestampSource.CommitTimestamp)
+
+          val leaderEpoch:Option[Int] = if (oat.leaderEpoch().isPresent) Option(oat.leaderEpoch().get()) else Option(null.asInstanceOf[Int])
+          val m = LogEndOffsetSnapshot(timestampInfo, kafkaClusterId, tp.topic(), tp.partition(), oat.offset(), leaderEpoch,hostname, Map())
+          auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap)
+        // TODO Should we send log-end-offsets for cases where oat is null?
+      }
     }
   }
 
@@ -328,7 +348,7 @@ class AuditService(auditTypes: List[AuditType],
     }
   }
 
-  private def createAuditConsumer(bootstrapServer: String,auditConsumerGroupId: String) = {
+  private def createAuditConsumer(bootstrapServer: String, auditConsumerGroupId: String) = {
     val properties = new Properties()
     val deserializer = (new ByteArrayDeserializer).getClass.getName
     properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)

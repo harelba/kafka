@@ -179,8 +179,10 @@ object ConsumerGroupCommand extends Logging {
         auditService.run(auditor)
       }
       catch {
-        case NonFatal(e:AuditorInitializationException) => System.exit(1)
-        case _ => System.exit(2)
+        case e:AuditorInitializationException => {
+          fatal("Could not initialize auditor. Exiting")
+          System.exit(1)
+        }
       }
     }
 
@@ -189,11 +191,11 @@ object ConsumerGroupCommand extends Logging {
       Try(auditor.initialize(auditTargetConfig)) match {
         case Success(_) => info("Audit target initialization finished")
         case Failure(e:AuditorInitializationException) => {
-          fatal(s"Audit target initialization failed with reason $e. Stopping",e)
+          fatal(s"Audit target initialization failed with reason $e",e)
           throw e
         }
         case Failure(e: Throwable) =>
-          fatal("Audit target initialization failed internally. Stopping",e)
+          fatal("Audit target initialization failed internally.",e)
           throw e
       }
     }
