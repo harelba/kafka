@@ -478,9 +478,10 @@ object ConsumerGroupCommand extends Logging {
     }
 
     private def mapFromString(s: String) = {
-      Map(s.trim.split(",").map { s =>
-        val parts = s.split("=",2)
-        (parts(0).trim,parts(1).trim)
+      Map(s.trim.split(",").collect {
+        case kv if kv != "" && kv.contains("=") =>
+          val parts = kv.split("=",2)
+          (parts(0).trim,parts(1).trim)
       }:_*)
     }
 
