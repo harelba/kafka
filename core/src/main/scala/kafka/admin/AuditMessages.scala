@@ -27,13 +27,14 @@ import scala.collection.JavaConverters._
 
 object AuditMessageType extends Enumeration {
   type AuditMessageType = Value
-  val GroupMetadata, GroupOffsets, PartitionAssignment, OffsetCommit, AuditPartitionRevoked, AuditPartitionAssigned = Value
+  val GroupMetadata, GroupOffsets, PartitionAssignment, OffsetCommit, OffsetCommitSnapshot,
+      AuditPartitionRevoked, AuditPartitionAssigned = Value
 
 }
 
 object AuditEventTimestampSource extends Enumeration {
   type AuditEventTimestampSource = Value
-  val CreateTimestamp,LogAppendTimestamp,CommitTimestamp,AuditProcessingTime,GroupMetadataTimestamp = Value
+  val CreateTimestamp,LogAppendTimestamp,CommitTimestamp,AuditProcessingTime,GroupMetadataTimestamp,SnapshotReportingTimestamp = Value
 }
 
 case class AuditEventTimestampInfo(eventTimestamp: Long,
@@ -150,3 +151,30 @@ case class AuditPartitionsAssignedAuditMessage(eventTimestampInfo: AuditEventTim
   )).asJava
 }
 
+case class OffsetCommitSnapshot(eventTimestampInfo: Option[AuditEventTimestampInfo],
+                                kafkaClusterId: String,
+                                groupId: String,
+                                topic: String,
+                                partition: Int,
+                                committedOffset: Long,
+                                commitTimestamp: Long,
+                                reporterType: String,
+                                reportingHost: String,
+                                metadata: Map[String,String]) {
+
+  private val eventTimestampInfoMap = eventTimestampInfo match {
+    case Some(eti) => eti.asJavaMap.asScala
+    case None => Map()
+  }
+  val asJavaMap = (eventTimestampInfoMap ++ Map(
+    "kafkaClusterId" -> kafkaClusterId,
+    "groupId" -> groupId,
+    "topic" -> topic,
+    "partition" -> partition,
+    "committedOffset" -> committedOffset,
+    "commitTimestamp" -> commitTimestamp,
+    "reporterType" -> reporterType,
+    "reportingHost" -> reportingHost,
+    "metadata" -> metadata.asJava
+  )).asJava
+}

@@ -144,7 +144,24 @@ object ConsumerGroupCommand extends Logging {
 
       val resolveClientHostIps = opts.options.has(opts.auditResolveClientHostIpsOpt)
 
-      val auditService = new AuditService(auditTypes,bootstrapServer,resolveClientHostIps,Time.SYSTEM)
+      val auditKafkaClusterId = Option(opts.options.valueOf(opts.auditKafkaClusterIdOpt)) match {
+        case Some(clusterId) => clusterId
+        case None => bootstrapServer
+      }
+
+      val offsetCommitSnapshotSendIntervalMs = opts.options.valueOf(opts.offsetCommitSnapshotSendIntervalMsOpt)
+      val offsetCommitSnapshotCleanupIntervalMs = opts.options.valueOf(opts.offsetCommitSnapshotCleanupIntervalMsOpt)
+
+      val auditConsumerGroupId = opts.options.valueOf(opts.auditConsumerGroupIdOpt)
+      val auditService = new AuditService(
+        auditTypes,
+        bootstrapServer,
+        resolveClientHostIps,
+        auditKafkaClusterId,
+        auditConsumerGroupId,
+        offsetCommitSnapshotSendIntervalMs,
+        offsetCommitSnapshotCleanupIntervalMs,
+        Time.SYSTEM)
 
       val auditTarget = opts.options.valueOf(opts.auditTargetOpt)
 
@@ -827,7 +844,7 @@ object ConsumerGroupCommand extends Logging {
     val stateOpt = parser.accepts("state", StateDoc)
                          .availableIf(describeOpt)
     val auditOpt = parser.accepts("audit",AuditDoc)
-    val auditTypesOpt = parser.accepts("audit-types","Choose which types of events to audit")
+    val auditTypesOpt = parser.accepts("audit-type","Choose which type of events to audit. Can be used multiple times in the same run in order to audit multiple types")
       .availableIf(auditOpt)
       .withRequiredArg().withValuesConvertedBy(AuditType.valueConverter).defaultsTo(AuditType.GroupMetadata)
     val auditResolveClientHostIpsOpt = parser
@@ -839,6 +856,19 @@ object ConsumerGroupCommand extends Logging {
     val auditTargetConfigOpt = parser.accepts("audit-target-config","A comma separate key=value list of audit-target specific parameters")
         .availableIf(auditOpt)
         .withRequiredArg()
+    val auditKafkaClusterIdOpt = parser.accepts("audit-kafka-cluster-id","A string id for the kafka cluster being audited. Will be sent as part of OffsetCommitSnapshots. Defaults to bootstrap-server value")
+      .availableIf(auditOpt)
+      .withRequiredArg()
+    val auditConsumerGroupIdOpt = parser.accepts("audit-consumer-group-id","The name of the auditing consumer group id")
+      .availableIf(auditOpt)
+      .withRequiredArg().defaultsTo("__audit-consumer-group-1")
+    val offsetCommitSnapshotSendIntervalMsOpt = parser.accepts("offset-commit-snapshot-send-interval-ms","How often to send offset commits snapshot messages.")
+      .availableIf(auditOpt)
+      .withRequiredArg().ofType(classOf[Int]).defaultsTo(10000)
+    val offsetCommitSnapshotCleanupIntervalMsOpt = parser.accepts("offset-commit-snapshot-cleanup-interval-ms","How often to delete stale offset commit snapshots.")
+      .availableIf(auditOpt)
+      .withRequiredArg().ofType(classOf[Int]).defaultsTo(86400*1000)
+
 
     parser.mutuallyExclusive(membersOpt, offsetsOpt, stateOpt, auditOpt)
 
