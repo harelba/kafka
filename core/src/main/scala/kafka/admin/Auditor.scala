@@ -36,18 +36,18 @@ class AuditorInitializationException(reason:String,e:Throwable) extends Exceptio
 trait Auditor {
   def initialize(config: Map[String,String]) = {}
 
-  def audit(messageType: AuditMessageType, javaMap: util.Map[String, Any]) = {
+  def audit(messageType: AuditMessageType, javaMap: util.Map[String, Any],key:String) = {
     val s = Json.encodeAsString((javaMap.asScala ++ Map("kafkaAuditMessageType" -> messageType.toString)).asJava)
-    sendAuditInfo(s)
+    sendAuditInfo(key,s)
   }
 
-  protected def sendAuditInfo(s: String)
+  protected def sendAuditInfo(key:String,s: String)
 }
 
 class Log4JAuditor extends Auditor {
   private lazy val auditLogger = LoggerFactory.getLogger("consumer_groups_audit_logger")
 
-  def sendAuditInfo(s: String) = {
+  def sendAuditInfo(key:String,s: String) = {
     auditLogger.info(s)
   }
 }
@@ -79,23 +79,24 @@ class KafkaTopicAuditor extends Auditor {
     }
   }
 
-  override protected def sendAuditInfo(s: String): Unit = {
-    val pr = new ProducerRecord[String,String](topic,s)
+  override protected def sendAuditInfo(key:String,s: String): Unit = {
+    val pr = new ProducerRecord[String,String](topic,key,s)
     producer.send(pr)
   }
 }
 
 class StdOutAuditor extends Auditor {
-  def sendAuditInfo(s: String) = {
+  def sendAuditInfo(key:String,s: String) = {
     println(s)
   }
 }
 
 class InMemoryAuditor extends Auditor {
-  private val audits = mutable.Buffer[String]()
+  private val audits = mutable.Buffer[(String,String)]()
 
-  override def sendAuditInfo(s: String) = {
-    audits += s
+  override def sendAuditInfo(key:String,s: String) = {
+    val t = (key,s)
+    audits += t
   }
 
   def fetchAudits() = audits.toList

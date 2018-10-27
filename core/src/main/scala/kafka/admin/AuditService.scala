@@ -31,7 +31,6 @@ import kafka.admin.AuditType.AuditType
 import kafka.common.OffsetAndMetadata
 import kafka.coordinator.group.{GroupMetadataKey, GroupMetadataManager, GroupTopicPartition, OffsetKey}
 import kafka.utils.Logging
-import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig, KafkaAdminClient}
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRebalanceListener, ConsumerRecord, KafkaConsumer}
 import org.apache.kafka.common.TopicPartition
@@ -58,7 +57,6 @@ class AuditService(auditTypes: List[AuditType],
                    time: Time) extends Logging {
 
   private val auditConsumer = createConsumer(bootstrapServer, auditConsumerGroupId)
-  private val adminClient = createAdminClient(bootstrapServer)
 
   private val auditShutdown = new AtomicBoolean(false)
   private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
@@ -76,7 +74,7 @@ class AuditService(auditTypes: List[AuditType],
 
     try {
       info(s"Audit service subscribing to topic ${Topic.GROUP_METADATA_TOPIC_NAME}")
-      auditConsumer.subscribe(List(Topic.GROUP_METADATA_TOPIC_NAME).asJavaCollection, new AuditRebalanceListener(auditor))
+      auditConsumer.subscribe(List(Topic.GROUP_METADATA_TOPIC_NAME).asJavaCollection, new AuditRebalanceListener(auditor, kafkaClusterId))
       while (!auditShutdown.get()) {
         val records = auditConsumer.poll(Duration.of(1, ChronoUnit.SECONDS)).asScala
         for (r <- records) {
@@ -185,7 +183,7 @@ class AuditService(auditTypes: List[AuditType],
         }
 
       snapshots.foreach { snapshot =>
-        auditor.audit(AuditMessageType.OffsetCommitSnapshot, snapshot.asJavaMap)
+        auditor.audit(AuditMessageType.OffsetCommitSnapshot, snapshot.asJavaMap, snapshot.getKey)
       }
       info("Sent offset commit snapshots")
 
@@ -200,16 +198,16 @@ class AuditService(auditTypes: List[AuditType],
         retrieveKafka10BasedLogEndOffsets(topicPartitions)
       }
       else {
-        retrieveKafka8BasedLogEndOffsets(snapshotTimestamp,topicPartitions)
+        retrieveKafka8BasedLogEndOffsets(snapshotTimestamp, topicPartitions)
       }
       info(s"Sending ${logEndOffsetMessages.size} log end offset snapshots")
       for (m <- logEndOffsetMessages) {
-        auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap)
+        auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap, m.getKey)
       }
     }
   }
 
-  private def retrieveKafka8BasedLogEndOffsets(snapshotTimestamp: Long,topicPartitions: Map[TopicPartition, Long]) = {
+  private def retrieveKafka8BasedLogEndOffsets(snapshotTimestamp: Long, topicPartitions: Map[TopicPartition, Long]) = {
     val latestOffsetsForTopicPartitions = auditConsumer.endOffsets(topicPartitions.keys.asJavaCollection).asScala
     topicPartitions.keys.map { k =>
       (k, latestOffsetsForTopicPartitions.get(k)) match {
@@ -225,7 +223,7 @@ class AuditService(auditTypes: List[AuditType],
   }
 
   private def retrieveKafka10BasedLogEndOffsets(topicPartitions: Map[TopicPartition, Long]) = {
-    val javaBasedTopicPartitions = topicPartitions.map { case (k,v) => (k,new java.lang.Long(v)) }.asJava
+    val javaBasedTopicPartitions = topicPartitions.map { case (k, v) => (k, new java.lang.Long(v)) }.asJava
     val offsetsForSnapshotTime = auditConsumer.offsetsForTimes(javaBasedTopicPartitions).asScala
     offsetsForSnapshotTime.collect {
       case (tp, oat) if oat != null =>
@@ -281,6 +279,7 @@ class AuditService(auditTypes: List[AuditType],
 
             val o = OffsetCommitAuditMessage(
               eventTimestampInfo,
+              kafkaClusterId,
               groupTopicPartition.group,
               groupTopicPartition.topicPartition.topic(),
               groupTopicPartition.topicPartition.partition(),
@@ -290,7 +289,7 @@ class AuditService(auditTypes: List[AuditType],
               offsetMessage.commitTimestamp,
               offsetMessage.expireTimestamp
             )
-            auditor.audit(AuditMessageType.OffsetCommit, o.asJavaMap)
+            auditor.audit(AuditMessageType.OffsetCommit, o.asJavaMap, o.getKey)
           case None => //
         }
       case _ => // no-op
@@ -310,6 +309,7 @@ class AuditService(auditTypes: List[AuditType],
 
             val groupMetadataAuditMessage = GroupMetadataAuditMessage(
               eventTimestampInfo,
+              kafkaClusterId,
               r.timestamp(),
               r.timestampType(),
               groupId,
@@ -320,7 +320,7 @@ class AuditService(auditTypes: List[AuditType],
               groupMetadata.canRebalance
             )
 
-            auditor.audit(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap)
+            auditor.audit(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap, groupMetadataAuditMessage.getKey)
 
             for ((topicPartition, offsetAndMetadata) <- groupMetadata.allOffsets) {
               val o = GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage,
@@ -331,7 +331,7 @@ class AuditService(auditTypes: List[AuditType],
                 offsetAndMetadata.commitTimestamp,
                 offsetAndMetadata.expireTimestamp)
 
-              auditor.audit(AuditMessageType.GroupOffsets, o.asJavaMap)
+              auditor.audit(AuditMessageType.GroupOffsets, o.asJavaMap, o.getKey)
             }
 
             for (memberMetadata <- groupMetadata.allMemberMetadata) {
@@ -350,7 +350,7 @@ class AuditService(auditTypes: List[AuditType],
                   pt.partition(),
                   assignment.userData())
 
-                auditor.audit(AuditMessageType.PartitionAssignment, o.asJavaMap)
+                auditor.audit(AuditMessageType.PartitionAssignment, o.asJavaMap, o.getKey)
               }
             }
           case None => //
@@ -374,16 +374,10 @@ class AuditService(auditTypes: List[AuditType],
     }
     catch {
       case NonFatal(e) => {
-        warn(s"Could not resolve client host ${clientHost}. Leaving it as it is", e)
+        warn(s"Could not resolve client host $clientHost. Leaving it as it is", e)
         clientHost
       }
     }
-  }
-
-  private def createAdminClient(bootstrapServer: String) = {
-    val properties = new Properties()
-    properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)
-    org.apache.kafka.clients.admin.AdminClient.create(properties)
   }
 
   private def createConsumer(bootstrapServer: String, auditConsumerGroupId: String) = {
@@ -440,20 +434,20 @@ class AuditService(auditTypes: List[AuditType],
   }
 }
 
-class AuditRebalanceListener(auditor: Auditor) extends ConsumerRebalanceListener {
+class AuditRebalanceListener(auditor: Auditor, kafkaClusterId: String) extends ConsumerRebalanceListener {
   private val auditConsumerHost = InetAddress.getLocalHost.getCanonicalHostName
 
   override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
-      val o = AuditPartitionsRevokedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), auditConsumerHost, tp.topic(), tp.partition())
-      auditor.audit(AuditMessageType.AuditPartitionRevoked, o.asJavaMap)
+      val o = AuditPartitionsRevokedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), kafkaClusterId, auditConsumerHost, tp.topic(), tp.partition())
+      auditor.audit(AuditMessageType.AuditPartitionRevoked, o.asJavaMap, o.getKey)
     }
   }
 
   override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
-      val o = AuditPartitionsAssignedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), auditConsumerHost, tp.topic(), tp.partition())
-      auditor.audit(AuditMessageType.AuditPartitionAssigned, o.asJavaMap)
+      val o = AuditPartitionsAssignedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), kafkaClusterId, auditConsumerHost, tp.topic(), tp.partition())
+      auditor.audit(AuditMessageType.AuditPartitionAssigned, o.asJavaMap, o.getKey)
     }
   }
 }
