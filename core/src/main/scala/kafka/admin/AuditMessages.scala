@@ -34,7 +34,7 @@ object AuditMessageType extends Enumeration {
 
 object AuditEventTimestampSource extends Enumeration {
   type AuditEventTimestampSource = Value
-  val CreateTimestamp, LogAppendTimestamp, CommitTimestamp, AuditProcessingTime, GroupMetadataTimestamp, SnapshotReportingTimestamp = Value
+  val CreateTimestamp, LogAppendTimestamp, CommitTimestamp, AuditProcessingTime, GroupMetadataTimestamp, SnapshotReportingTimestamp, RecordTimestamp = Value
 }
 
 case class AuditEventTimestampInfo(eventTimestamp: Long,

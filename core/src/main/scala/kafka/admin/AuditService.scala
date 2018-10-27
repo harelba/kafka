@@ -31,6 +31,7 @@ import kafka.admin.AuditType.AuditType
 import kafka.common.OffsetAndMetadata
 import kafka.coordinator.group.{GroupMetadataKey, GroupMetadataManager, GroupTopicPartition, OffsetKey}
 import kafka.utils.Logging
+import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig, KafkaAdminClient}
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRebalanceListener, ConsumerRecord, KafkaConsumer}
 import org.apache.kafka.common.TopicPartition
@@ -56,7 +57,8 @@ class AuditService(auditTypes: List[AuditType],
                    offsetCommitSnapshotCleanupIntervalMs: Int,
                    time: Time) extends Logging {
 
-  private val auditConsumer = createAuditConsumer(bootstrapServer, auditConsumerGroupId)
+  private val auditConsumer = createConsumer(bootstrapServer, auditConsumerGroupId)
+  private val adminClient = createAdminClient(bootstrapServer)
 
   private val auditShutdown = new AtomicBoolean(false)
   private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
@@ -188,25 +190,55 @@ class AuditService(auditTypes: List[AuditType],
       info("Sent offset commit snapshots")
 
       val topicPartitions = snapshots.map({ x =>
-        new TopicPartition(x.topic, x.partition) -> new java.lang.Long(x.commitTimestamp)
+        new TopicPartition(x.topic, x.partition) -> x.commitTimestamp
       }
       ).toMap
 
-      val offsetsForSnapshotTime = auditConsumer.offsetsForTimes(topicPartitions.asJava).asScala
-      println(offsetsForSnapshotTime)
+      info("Retrieving logEndOffset snapshots")
 
-      offsetsForSnapshotTime.collect {
-        case (tp, oat) if oat != null =>
-          println(s"found non null ${tp} ${oat}")
-          // TODO Should it be CommitTimestamp? or something else?
-          val timestampInfo = AuditEventTimestampInfo(oat.timestamp(), AuditEventTimestampSource.CommitTimestamp)
-
-          val leaderEpoch:Option[Int] = if (oat.leaderEpoch().isPresent) Option(oat.leaderEpoch().get()) else Option(null.asInstanceOf[Int])
-          val m = LogEndOffsetSnapshot(timestampInfo, kafkaClusterId, tp.topic(), tp.partition(), oat.offset(), leaderEpoch,hostname, Map())
-          auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap)
-        // TODO Should we send log-end-offsets for cases where oat is null?
+      val logEndOffsetMessages = if (isKafka10) {
+        retrieveKafka10BasedLogEndOffsets(topicPartitions)
+      }
+      else {
+        retrieveKafka8BasedLogEndOffsets(snapshotTimestamp,topicPartitions)
+      }
+      info(s"Sending ${logEndOffsetMessages.size} log end offset snapshots")
+      for (m <- logEndOffsetMessages) {
+        auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap)
       }
     }
+  }
+
+  private def retrieveKafka8BasedLogEndOffsets(snapshotTimestamp: Long,topicPartitions: Map[TopicPartition, Long]) = {
+    val latestOffsetsForTopicPartitions = auditConsumer.endOffsets(topicPartitions.keys.asJavaCollection).asScala
+    topicPartitions.keys.map { k =>
+      (k, latestOffsetsForTopicPartitions.get(k)) match {
+        case (tp, Some(o)) => Option((tp, o))
+        case (tp, None) => None
+      }
+    } collect {
+      case Some((tp, o)) => {
+        val timestampInfo = AuditEventTimestampInfo(snapshotTimestamp, AuditEventTimestampSource.SnapshotReportingTimestamp)
+        LogEndOffsetSnapshot(timestampInfo, kafkaClusterId, tp.topic(), tp.partition(), o, None, hostname, Map())
+      }
+    }
+  }
+
+  private def retrieveKafka10BasedLogEndOffsets(topicPartitions: Map[TopicPartition, Long]) = {
+    val javaBasedTopicPartitions = topicPartitions.map { case (k,v) => (k,new java.lang.Long(v)) }.asJava
+    val offsetsForSnapshotTime = auditConsumer.offsetsForTimes(javaBasedTopicPartitions).asScala
+    offsetsForSnapshotTime.collect {
+      case (tp, oat) if oat != null =>
+        val timestampInfo = AuditEventTimestampInfo(oat.timestamp(), AuditEventTimestampSource.RecordTimestamp)
+
+        val leaderEpoch: Option[Int] = if (oat.leaderEpoch().isPresent) Option(oat.leaderEpoch().get()) else Option(null.asInstanceOf[Int])
+        LogEndOffsetSnapshot(timestampInfo, kafkaClusterId, tp.topic(), tp.partition(), oat.offset(), leaderEpoch, hostname, Map())
+      // TODO Should we send log-end-offsets for cases where oat is null? Perhaps no for kafka10
+    }
+  }
+
+  def isKafka10 = {
+    false
   }
 
   private def trackOffsetCommit(auditor: Auditor, r: ConsumerRecord[Array[Byte], Array[Byte]]) = {
@@ -348,7 +380,13 @@ class AuditService(auditTypes: List[AuditType],
     }
   }
 
-  private def createAuditConsumer(bootstrapServer: String, auditConsumerGroupId: String) = {
+  private def createAdminClient(bootstrapServer: String) = {
+    val properties = new Properties()
+    properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)
+    org.apache.kafka.clients.admin.AdminClient.create(properties)
+  }
+
+  private def createConsumer(bootstrapServer: String, auditConsumerGroupId: String) = {
     val properties = new Properties()
     val deserializer = (new ByteArrayDeserializer).getClass.getName
     properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServer)
