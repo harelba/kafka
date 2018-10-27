@@ -23,6 +23,7 @@ import java.util.{Date, Properties}
 import javax.xml.datatype.DatatypeFactory
 
 import joptsimple.{OptionParser, OptionSpec}
+import kafka.admin.audit._
 import kafka.utils._
 import org.apache.kafka.clients.admin._
 import org.apache.kafka.clients.consumer._

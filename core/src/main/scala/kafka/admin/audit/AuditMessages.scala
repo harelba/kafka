@@ -15,12 +15,12 @@
   * limitations under the License.
   */
 
-package kafka.admin
+package kafka.admin.audit
 
 import java.nio.ByteBuffer
 import java.util.Base64
 
-import kafka.admin.AuditEventTimestampSource.AuditEventTimestampSource
+import kafka.admin.audit.AuditEventTimestampSource.AuditEventTimestampSource
 import org.apache.kafka.common.record.TimestampType
 
 import scala.collection.JavaConverters._

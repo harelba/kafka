@@ -15,24 +15,22 @@
   * limitations under the License.
   */
 
-package kafka.admin
+package kafka.admin.audit
 
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.time.Duration
 import java.time.temporal.ChronoUnit
-import java.util
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, CountDownLatch}
 
-import joptsimple.ValueConverter
-import kafka.admin.AuditType.AuditType
+import kafka.admin.audit.AuditType.AuditType
 import kafka.common.OffsetAndMetadata
 import kafka.coordinator.group.{GroupMetadataKey, GroupMetadataManager, GroupTopicPartition, OffsetKey}
 import kafka.utils.Logging
 import org.apache.kafka.clients.consumer.internals.ConsumerProtocol
-import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRebalanceListener, ConsumerRecord, KafkaConsumer}
+import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord, KafkaConsumer}
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.WakeupException
 import org.apache.kafka.common.internals.Topic
@@ -443,48 +441,10 @@ class AuditService(auditTypes: List[AuditType],
   }
 }
 
-class AuditRebalanceListener(auditor: Auditor, kafkaClusterId: String) extends ConsumerRebalanceListener {
-  private val auditConsumerHost = InetAddress.getLocalHost.getCanonicalHostName
 
-  override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
-    partitions.asScala.foreach { tp =>
-      val o = AuditPartitionsRevokedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), kafkaClusterId, auditConsumerHost, tp.topic(), tp.partition())
-      auditor.audit(AuditMessageType.AuditPartitionRevoked, o)
-    }
-  }
 
-  override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
-    partitions.asScala.foreach { tp =>
-      val o = AuditPartitionsAssignedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), kafkaClusterId, auditConsumerHost, tp.topic(), tp.partition())
-      auditor.audit(AuditMessageType.AuditPartitionAssigned, o)
-    }
-  }
-}
 
-object AuditType extends Enumeration {
-  type AuditType = Value
-  val GroupMetadata, OffsetCommits, OffsetCommitSnapshots, LogEndOffsetSnapshots = Value
 
-  def valueConverter = new ValueConverter[AuditType] {
-    override def valueType(): Class[_ <: AuditType] = classOf[AuditType]
 
-    override def convert(value: String): AuditType = AuditType.withName(value)
-
-    override def valuePattern(): String = AuditType.values mkString ","
-  }
-}
-
-object AuditTarget extends Enumeration {
-  type AuditTarget = Value
-  val StdOut, LogFile, KafkaTopic = Value
-
-  def valueConverter = new ValueConverter[AuditTarget] {
-    override def valueType(): Class[_ <: AuditTarget] = classOf[AuditTarget]
-
-    override def convert(value: String): AuditTarget = AuditTarget.withName(value)
-
-    override def valuePattern(): String = AuditTarget.values mkString ","
-  }
-}
 
 
