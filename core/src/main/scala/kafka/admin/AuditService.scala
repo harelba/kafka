@@ -171,7 +171,7 @@ class AuditService(auditTypes: List[AuditType],
     }
     info(s"Sending ${logEndOffsetMessages.size} log end offset snapshots")
     for (m <- logEndOffsetMessages) {
-      auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap, m.getKey)
+      auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m)
     }
   }
 
@@ -201,7 +201,7 @@ class AuditService(auditTypes: List[AuditType],
         }
 
       snapshots.foreach { snapshot =>
-        auditor.audit(AuditMessageType.OffsetCommitSnapshot, snapshot.asJavaMap, snapshot.getKey)
+        auditor.audit(AuditMessageType.OffsetCommitSnapshot, snapshot)
       }
       info("Sent offset commit snapshots")
 
@@ -298,7 +298,7 @@ class AuditService(auditTypes: List[AuditType],
               offsetMessage.commitTimestamp,
               offsetMessage.expireTimestamp
             )
-            auditor.audit(AuditMessageType.OffsetCommit, o.asJavaMap, o.getKey)
+            auditor.audit(AuditMessageType.OffsetCommit, o)
           case None => //
         }
       case _ => // no-op
@@ -329,7 +329,7 @@ class AuditService(auditTypes: List[AuditType],
               groupMetadata.canRebalance
             )
 
-            auditor.audit(AuditMessageType.GroupMetadata, groupMetadataAuditMessage.asJavaMap, groupMetadataAuditMessage.getKey)
+            auditor.audit(AuditMessageType.GroupMetadata, groupMetadataAuditMessage)
 
             for ((topicPartition, offsetAndMetadata) <- groupMetadata.allOffsets) {
               val o = GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage,
@@ -340,7 +340,7 @@ class AuditService(auditTypes: List[AuditType],
                 offsetAndMetadata.commitTimestamp,
                 offsetAndMetadata.expireTimestamp)
 
-              auditor.audit(AuditMessageType.GroupOffsets, o.asJavaMap, o.getKey)
+              auditor.audit(AuditMessageType.GroupOffsets, o)
             }
 
             for (memberMetadata <- groupMetadata.allMemberMetadata) {
@@ -359,7 +359,7 @@ class AuditService(auditTypes: List[AuditType],
                   pt.partition(),
                   assignment.userData())
 
-                auditor.audit(AuditMessageType.PartitionAssignment, o.asJavaMap, o.getKey)
+                auditor.audit(AuditMessageType.PartitionAssignment, o)
               }
             }
           case None => //
@@ -449,14 +449,14 @@ class AuditRebalanceListener(auditor: Auditor, kafkaClusterId: String) extends C
   override def onPartitionsRevoked(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
       val o = AuditPartitionsRevokedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), kafkaClusterId, auditConsumerHost, tp.topic(), tp.partition())
-      auditor.audit(AuditMessageType.AuditPartitionRevoked, o.asJavaMap, o.getKey)
+      auditor.audit(AuditMessageType.AuditPartitionRevoked, o)
     }
   }
 
   override def onPartitionsAssigned(partitions: util.Collection[TopicPartition]): Unit = {
     partitions.asScala.foreach { tp =>
       val o = AuditPartitionsAssignedAuditMessage(AuditEventTimestampInfo(System.currentTimeMillis(), AuditEventTimestampSource.AuditProcessingTime), kafkaClusterId, auditConsumerHost, tp.topic(), tp.partition())
-      auditor.audit(AuditMessageType.AuditPartitionAssigned, o.asJavaMap, o.getKey)
+      auditor.audit(AuditMessageType.AuditPartitionAssigned, o)
     }
   }
 }

@@ -36,9 +36,9 @@ class AuditorInitializationException(reason:String,e:Throwable) extends Exceptio
 trait Auditor {
   def initialize(config: Map[String,String]) = {}
 
-  def audit(messageType: AuditMessageType, javaMap: util.Map[String, Any],key:String) = {
-    val s = Json.encodeAsString((javaMap.asScala ++ Map("kafkaAuditMessageType" -> messageType.toString)).asJava)
-    sendAuditInfo(key,s)
+  def audit(messageType: AuditMessageType, message: AuditMessage) = {
+    val s = Json.encodeAsString((message.asJavaMap.asScala ++ Map("kafkaAuditMessageType" -> messageType.toString)).asJava)
+    sendAuditInfo(message.getKey,s)
   }
 
   protected def sendAuditInfo(key:String,s: String)

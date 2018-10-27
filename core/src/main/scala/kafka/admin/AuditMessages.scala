@@ -44,6 +44,11 @@ case class AuditEventTimestampInfo(eventTimestamp: Long,
     "auditEventTimestampType" -> eventTimestampSource.toString).asJava
 }
 
+trait AuditMessage {
+  val asJavaMap: java.util.Map[String,Any]
+  val getKey: String
+}
+
 case class GroupMetadataAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
                                      kafkaClusterId:String,
                                      originalKeyTimestamp: Long,
@@ -53,7 +58,7 @@ case class GroupMetadataAuditMessage(eventTimestampInfo: AuditEventTimestampInfo
                                      protocolType: Option[String],
                                      currentStateName: String,
                                      currentStateTimestamp: Option[Long],
-                                     canRebalance: Boolean) {
+                                     canRebalance: Boolean) extends AuditMessage {
 
   private val recordTimestampInfo = Map(
     "originalKeyTimestamp" -> originalKeyTimestamp,
@@ -79,7 +84,7 @@ case class GroupMetadataOffsetInfoAuditMessage(groupMetadataAuditMessage: GroupM
                                                offset: Long,
                                                metadata: String,
                                                commitTimestamp: Long,
-                                               expireTimestamp: Option[Long]) {
+                                               expireTimestamp: Option[Long]) extends AuditMessage {
 
   val asJavaMap = (groupMetadataAuditMessage.asJavaMap.asScala ++ Map(
     "topic" -> topic,
@@ -104,7 +109,7 @@ case class GroupMetadataMemberMetadataAuditMessage(groupMetadataAuditMessage: Gr
                                                    topic: String,
                                                    partition: Int,
                                                    userData: ByteBuffer
-                                                  ) {
+                                                  ) extends AuditMessage {
   val asJavaMap = (groupMetadataAuditMessage.asJavaMap.asScala ++ Map(
     "memberId" -> memberId,
     "clientId" -> clientId,
@@ -132,7 +137,7 @@ case class OffsetCommitAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
                                     leaderEpoch: Option[Integer],
                                     metadata: String,
                                     commitTimestamp: Long,
-                                    expireTimestamp: Option[Long]) {
+                                    expireTimestamp: Option[Long]) extends AuditMessage {
   val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "kafkaClusterId" -> kafkaClusterId,
     "groupId" -> groupId,
@@ -147,7 +152,11 @@ case class OffsetCommitAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
   val getKey = kafkaClusterId + groupId + topic + partition
 }
 
-case class AuditPartitionsRevokedAuditMessage(eventTimestampInfo: AuditEventTimestampInfo, kafkaClusterId:String,auditConsumerHost: String, topic: String, partition: Int) {
+case class AuditPartitionsRevokedAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
+                                              kafkaClusterId:String,
+                                              auditConsumerHost: String,
+                                              topic: String,
+                                              partition: Int) extends AuditMessage {
   val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "kafkaClusterId" -> kafkaClusterId,
     "auditConsumerHost" -> auditConsumerHost,
@@ -158,7 +167,11 @@ case class AuditPartitionsRevokedAuditMessage(eventTimestampInfo: AuditEventTime
   val getKey = kafkaClusterId + topic + partition
 }
 
-case class AuditPartitionsAssignedAuditMessage(eventTimestampInfo: AuditEventTimestampInfo, kafkaClusterId:String, auditConsumerHost: String, topic: String, partition: Int) {
+case class AuditPartitionsAssignedAuditMessage(eventTimestampInfo: AuditEventTimestampInfo,
+                                               kafkaClusterId:String,
+                                               auditConsumerHost: String,
+                                               topic: String,
+                                               partition: Int) extends AuditMessage {
   val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "kafkaClusterId" -> kafkaClusterId,
     "auditConsumerHost" -> auditConsumerHost,
@@ -178,7 +191,7 @@ case class OffsetCommitSnapshot(eventTimestampInfo: Option[AuditEventTimestampIn
                                 commitTimestamp: Long,
                                 reporterType: String,
                                 reportingHost: String,
-                                metadata: Map[String, String]) {
+                                metadata: Map[String, String]) extends AuditMessage {
 
   private val eventTimestampInfoMap = eventTimestampInfo match {
     case Some(eti) => eti.asJavaMap.asScala
@@ -206,7 +219,7 @@ case class LogEndOffsetSnapshot(eventTimestampInfo: AuditEventTimestampInfo,
                                 logEndOffset: Long,
                                 leaderEpoch: Option[Int],
                                 reportingHost: String,
-                                metadata: Map[String,String]) {
+                                metadata: Map[String,String]) extends AuditMessage {
 
   val asJavaMap = (eventTimestampInfo.asJavaMap.asScala ++ Map(
     "kafkaClusterId" -> kafkaClusterId,
