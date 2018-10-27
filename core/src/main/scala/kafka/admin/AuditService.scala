@@ -124,7 +124,7 @@ class AuditService(auditTypes: List[AuditType],
       auditType match {
         case AuditType.GroupMetadata => auditGroupMetadataRecord(auditor, r)
         case AuditType.OffsetCommits => auditOffsetCommitRecord(auditor, r)
-        case _ => // (AuditType.OffsetCommitSnapshots is handled independently, since it's periodic
+        case _ => // other types are handled separately since they're periodic and not per message
       }
     }
   }
@@ -140,10 +140,13 @@ class AuditService(auditTypes: List[AuditType],
   var nextOffsetCommitSnapshotsTime: Long = calculateNextOffsetCommitSnapshotTime(time.milliseconds())
 
   private def shouldSendOffsetCommitSnapshots(refTime: Long): Boolean = {
-    val b = refTime > nextOffsetCommitSnapshotsTime
-    if (isDebugEnabled)
-      debug(s"refTime=$refTime nextOffsetCommitSnapshotsTime=$nextOffsetCommitSnapshotsTime delta ${nextOffsetCommitSnapshotsTime - refTime} b=$b")
+    val enabled = auditTypes.contains(AuditType.OffsetCommitSnapshots)
+    val b = enabled && (refTime > nextOffsetCommitSnapshotsTime)
     b
+  }
+
+  private def shouldSendLogEndOffsetSnapshots(refTime: Long): Boolean = {
+    auditTypes.contains(AuditType.LogEndOffsetSnapshots)
   }
 
   private def cleanOffsetCommitSnapshots(refTime: Long) = {
@@ -154,6 +157,21 @@ class AuditService(auditTypes: List[AuditType],
     forDeletion.foreach { case (k, v) =>
       info(s"Cleaning old offset commit snapshots for group/topic/partition $k - Last breadcrumb is $v. Time last seen is ${refTime - v.lastUpdatedAt} ms")
       offsetBreadcrumbs.remove(k)
+    }
+  }
+
+  def sendLogEndOffsetSnapshots(auditor: Auditor,snapshotTimestamp: Long,topicPartitions: Map[TopicPartition, Long]) = {
+    info("Retrieving logEndOffset snapshots")
+
+    val logEndOffsetMessages = if (isKafka10) {
+      retrieveKafka10BasedLogEndOffsets(topicPartitions)
+    }
+    else {
+      retrieveKafka8BasedLogEndOffsets(snapshotTimestamp, topicPartitions)
+    }
+    info(s"Sending ${logEndOffsetMessages.size} log end offset snapshots")
+    for (m <- logEndOffsetMessages) {
+      auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap, m.getKey)
     }
   }
 
@@ -192,17 +210,8 @@ class AuditService(auditTypes: List[AuditType],
       }
       ).toMap
 
-      info("Retrieving logEndOffset snapshots")
-
-      val logEndOffsetMessages = if (isKafka10) {
-        retrieveKafka10BasedLogEndOffsets(topicPartitions)
-      }
-      else {
-        retrieveKafka8BasedLogEndOffsets(snapshotTimestamp, topicPartitions)
-      }
-      info(s"Sending ${logEndOffsetMessages.size} log end offset snapshots")
-      for (m <- logEndOffsetMessages) {
-        auditor.audit(AuditMessageType.LogEndOffsetSnapshot, m.asJavaMap, m.getKey)
+      if (shouldSendLogEndOffsetSnapshots(snapshotTimestamp)) {
+        sendLogEndOffsetSnapshots(auditor,snapshotTimestamp,topicPartitions)
       }
     }
   }
@@ -454,7 +463,7 @@ class AuditRebalanceListener(auditor: Auditor, kafkaClusterId: String) extends C
 
 object AuditType extends Enumeration {
   type AuditType = Value
-  val GroupMetadata, OffsetCommits, OffsetCommitSnapshots = Value
+  val GroupMetadata, OffsetCommits, OffsetCommitSnapshots, LogEndOffsetSnapshots = Value
 
   def valueConverter = new ValueConverter[AuditType] {
     override def valueType(): Class[_ <: AuditType] = classOf[AuditType]
