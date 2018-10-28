@@ -153,7 +153,11 @@ object ConsumerGroupCommand extends Logging {
       val offsetCommitSnapshotSendIntervalMs = opts.options.valueOf(opts.offsetCommitSnapshotSendIntervalMsOpt)
       val offsetCommitSnapshotCleanupIntervalMs = opts.options.valueOf(opts.offsetCommitSnapshotCleanupIntervalMsOpt)
 
-      val auditConsumerGroupId = opts.options.valueOf(opts.auditConsumerGroupIdOpt)
+      val auditConsumerGroupId:String = Option(opts.options.valueOf(opts.auditConsumerGroupIdOpt)) match {
+        case Some(g) => g
+        case None => s"${bootstrapServer}__audit_consumer_group_1"
+      }
+
       val auditService = new AuditService(
         auditTypes,
         bootstrapServer,
@@ -868,7 +872,7 @@ object ConsumerGroupCommand extends Logging {
       .withRequiredArg()
     val auditConsumerGroupIdOpt = parser.accepts("audit-consumer-group-id","The name of the auditing consumer group id")
       .availableIf(auditOpt)
-      .withRequiredArg().defaultsTo("__audit-consumer-group-1")
+      .withRequiredArg().defaultsTo(null:String)
     val offsetCommitSnapshotSendIntervalMsOpt = parser.accepts("offset-commit-snapshot-send-interval-ms","How often to send offset commits snapshot messages.")
       .availableIf(auditOpt)
       .withRequiredArg().ofType(classOf[Int]).defaultsTo(60000)
