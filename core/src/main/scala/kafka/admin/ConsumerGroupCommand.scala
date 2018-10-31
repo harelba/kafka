@@ -872,7 +872,7 @@ object ConsumerGroupCommand extends Logging {
       .withRequiredArg()
     val auditConsumerGroupIdOpt = parser.accepts("audit-consumer-group-id","The name of the auditing consumer group id")
       .availableIf(auditOpt)
-      .withOptionalArg().defaultsTo(null:String)
+      .withOptionalArg()
     val offsetCommitSnapshotSendIntervalMsOpt = parser.accepts("offset-commit-snapshot-send-interval-ms","How often to send offset commits snapshot messages.")
       .availableIf(auditOpt)
       .withRequiredArg().ofType(classOf[Int]).defaultsTo(60000)
