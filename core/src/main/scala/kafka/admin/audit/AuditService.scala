@@ -39,6 +39,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.utils.Time
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent._
 import scala.concurrent.duration._
@@ -54,12 +55,39 @@ class AuditService(auditTypes: List[AuditType],
                    offsetCommitSnapshotCleanupIntervalMs: Int,
                    time: Time) extends Logging {
 
+  private val initializationTime: Long = time.milliseconds()
+
   private val auditConsumer = createConsumer(bootstrapServer, auditConsumerGroupId)
 
   private val auditShutdown = new AtomicBoolean(false)
   private val shutdownLatch: CountDownLatch = new CountDownLatch(1)
 
   private val hostname = InetAddress.getLocalHost.getCanonicalHostName
+
+  // TODO topicpartitions should be discovered independently from consumers, since we wanna send logendoffset info
+  // TODO  for non-consumed partitions as well. However, this is tricky, since it requires a leader which will do
+  // TODO  it for all consumers, otherwise we'd get multiple logendoffset messages from all the consumers in the
+  // TODO  audit consumer group
+
+//  private val topicPartitions = new ConcurrentHashMap[TopicPartition,Long]()
+//
+//  private val nextTopicPartitionsUpdateTime = calculateNextTopicPartitionUpdate(initializationTime)
+//  private val topicPartitionsUpdateIntervalMs = 60000L
+//
+//  private def calculateNextTopicPartitionUpdate(refTime: Long) = {
+//    (refTime / topicPartitionsUpdateIntervalMs) * topicPartitionsUpdateIntervalMs + topicPartitionsUpdateIntervalMs
+//  }
+//
+//  private def shouldUpdateTopicPartitions(refTime: Long) = {
+//    refTime > nextTopicPartitionsUpdateTime
+//  }
+//
+//  private def updateTopicPartitionsIfNeeded(refTime:Long) = {
+//    if (shouldUpdateTopicPartitions(refTime)) {
+//      val tp = auditConsumer.listTopics()
+//      if (topicPartitions.get())
+//    }
+//  }
 
   private def shouldTrackOffsetCommits() = {
     auditTypes contains AuditType.OffsetCommitSnapshots
@@ -135,7 +163,7 @@ class AuditService(auditTypes: List[AuditType],
 
 
   val offsetBreadcrumbs: ConcurrentHashMap[GroupTopicPartition, OffsetCommitBreadcrumb] = new ConcurrentHashMap
-  var nextOffsetCommitSnapshotsTime: Long = calculateNextOffsetCommitSnapshotTime(time.milliseconds())
+  var nextOffsetCommitSnapshotsTime: Long = calculateNextOffsetCommitSnapshotTime(initializationTime)
 
   private def shouldSendOffsetCommitSnapshots(refTime: Long): Boolean = {
     val enabled = auditTypes.contains(AuditType.OffsetCommitSnapshots)
@@ -197,6 +225,7 @@ class AuditService(auditTypes: List[AuditType],
             Map())
 
         }
+
 
       snapshots.foreach { snapshot =>
         auditor.audit(AuditMessageType.OffsetCommitSnapshot, snapshot)
