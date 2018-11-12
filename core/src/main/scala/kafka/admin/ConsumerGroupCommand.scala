@@ -20,20 +20,22 @@ package kafka.admin
 import java.text.{ParseException, SimpleDateFormat}
 import java.util
 import java.util.{Date, Properties}
-
 import javax.xml.datatype.DatatypeFactory
+
 import joptsimple.{OptionParser, OptionSpec}
+import kafka.admin.audit._
 import kafka.utils._
-import org.apache.kafka.clients.{CommonClientConfigs, admin}
 import org.apache.kafka.clients.admin._
-import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer, OffsetAndMetadata}
+import org.apache.kafka.clients.consumer._
+import org.apache.kafka.clients.{CommonClientConfigs, admin}
 import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.common.utils.{Time, Utils}
 import org.apache.kafka.common.{KafkaException, Node, TopicPartition}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 import scala.collection.{Seq, Set}
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object ConsumerGroupCommand extends Logging {
@@ -45,9 +47,9 @@ object ConsumerGroupCommand extends Logging {
       CommandLineUtils.printUsageAndDie(opts.parser, "List all consumer groups, describe a consumer group, delete consumer group info, or reset consumer group offsets.")
 
     // should have exactly one action
-    val actions = Seq(opts.listOpt, opts.describeOpt, opts.deleteOpt, opts.resetOffsetsOpt).count(opts.options.has)
+    val actions = Seq(opts.listOpt, opts.describeOpt, opts.deleteOpt, opts.resetOffsetsOpt,opts.auditOpt).count(opts.options.has)
     if (actions != 1)
-      CommandLineUtils.printUsageAndDie(opts.parser, "Command must include exactly one action: --list, --describe, --delete, --reset-offsets")
+      CommandLineUtils.printUsageAndDie(opts.parser, "Command must include exactly one action: --list, --describe, --delete, --reset-offsets, --audit")
 
     opts.checkArgs()
 
@@ -60,6 +62,10 @@ object ConsumerGroupCommand extends Logging {
         consumerGroupService.describeGroup()
       else if (opts.options.has(opts.deleteOpt))
         consumerGroupService.deleteGroups()
+      else if (opts.options.has(opts.auditOpt)) {
+
+        consumerGroupService.audit()
+      }
       else if (opts.options.has(opts.resetOffsetsOpt)) {
         val offsetsToReset = consumerGroupService.resetOffsets()
         if (opts.options.has(opts.exportOpt)) {
@@ -131,6 +137,72 @@ object ConsumerGroupCommand extends Logging {
 
         val listings = result.all.get.asScala
         listings.map(_.groupId).toList
+    }
+
+    def audit() = {
+      val bootstrapServer = opts.options.valueOf(opts.bootstrapServerOpt)
+      val auditTypes = opts.options.valuesOf(opts.auditTypesOpt).asScala.toList
+
+      val resolveClientHostIps = opts.options.has(opts.auditResolveClientHostIpsOpt)
+
+      val auditKafkaClusterId = Option(opts.options.valueOf(opts.auditKafkaClusterIdOpt)) match {
+        case Some(clusterId) => clusterId
+        case None => bootstrapServer
+      }
+
+      val offsetCommitSnapshotSendIntervalMs = opts.options.valueOf(opts.offsetCommitSnapshotSendIntervalMsOpt)
+      val offsetCommitSnapshotCleanupIntervalMs = opts.options.valueOf(opts.offsetCommitSnapshotCleanupIntervalMsOpt)
+
+      val auditConsumerGroupId:String = Option(opts.options.valueOf(opts.auditConsumerGroupIdOpt)) match {
+        case Some(g) => g
+        case None => s"${bootstrapServer}__audit_consumer_group_1"
+      }
+
+      val auditService = new AuditService(
+        auditTypes,
+        bootstrapServer,
+        resolveClientHostIps,
+        auditKafkaClusterId,
+        auditConsumerGroupId,
+        offsetCommitSnapshotSendIntervalMs,
+        offsetCommitSnapshotCleanupIntervalMs,
+        Time.SYSTEM)
+
+      val auditTarget = opts.options.valueOf(opts.auditTargetOpt)
+
+      val auditor = auditTarget match {
+        case AuditTarget.StdOut => new StdOutAuditor()
+        case AuditTarget.LogFile => new Log4JAuditor()
+        case AuditTarget.KafkaTopic => new KafkaTopicAuditor()
+      }
+
+      val auditTargetConfigStr = opts.options.valueOf(opts.auditTargetConfigOpt)
+      val auditTargetConfig = mapFromString(auditTargetConfigStr)
+
+      try {
+        initializeAuditor(auditor,auditTargetConfig)
+        auditService.run(auditor)
+      }
+      catch {
+        case e:AuditorInitializationException => {
+          fatal("Could not initialize auditor. Exiting")
+          System.exit(1)
+        }
+      }
+    }
+
+    private def initializeAuditor(auditor:Auditor,auditTargetConfig: Map[String,String]) = {
+      info(s"Going to initialize audit target $auditor with the following config: $auditTargetConfig")
+      Try(auditor.initialize(auditTargetConfig)) match {
+        case Success(_) => info("Audit target initialization finished")
+        case Failure(e:AuditorInitializationException) => {
+          fatal(s"Audit target initialization failed with reason $e",e)
+          throw e
+        }
+        case Failure(e: Throwable) =>
+          fatal("Audit target initialization failed internally.",e)
+          throw e
+      }
     }
 
     private def shouldPrintMemberState(group: String, state: Option[String], numRows: Option[Int]): Boolean = {
@@ -410,6 +482,14 @@ object ConsumerGroupCommand extends Logging {
           case _ => topicPartition -> LogOffsetResult.Unknown
         }
       }.toMap
+    }
+
+    private def mapFromString(s: String) = {
+      Map(s.trim.split(",").collect {
+        case kv if kv != "" && kv.contains("=") =>
+          val parts = kv.split("=",2)
+          (parts(0).trim,parts(1).trim)
+      }:_*)
     }
 
     private def getLogTimestampOffsets(topicPartitions: Seq[TopicPartition], timestamp: java.lang.Long): Map[TopicPartition, LogOffsetResult] = {
@@ -711,6 +791,7 @@ object ConsumerGroupCommand extends Logging {
       "Example: --bootstrap-server localhost:9092 --describe --group group1 --offsets"
     val StateDoc = "Describe the group state. This option may be used with '--describe' and '--bootstrap-server' options only." + nl +
       "Example: --bootstrap-server localhost:9092 --describe --group group1 --state"
+    val AuditDoc = "Run a service which emits rebalancing and offset commits information in a machine-readable way"
 
     val parser = new OptionParser(false)
     val bootstrapServerOpt = parser.accepts("bootstrap-server", BootstrapServerDoc)
@@ -773,10 +854,37 @@ object ConsumerGroupCommand extends Logging {
                            .availableIf(describeOpt)
     val stateOpt = parser.accepts("state", StateDoc)
                          .availableIf(describeOpt)
+    val auditOpt = parser.accepts("audit",AuditDoc)
+    val auditTypesOpt = parser.accepts("audit-type","Choose which type of events to audit. Can be used multiple times in the same run in order to audit multiple types")
+      .availableIf(auditOpt)
+      .withRequiredArg().withValuesConvertedBy(AuditType.valueConverter).defaultsTo(AuditType.GroupMetadata)
+    val auditResolveClientHostIpsOpt = parser
+      .accepts("resolve-client-host-ips","Try to resolve clientHost IP Addresses before auditing them")
+      .availableIf(auditOpt)
+    val auditTargetOpt = parser.accepts("audit-target","Choose the target of the audit process")
+      .availableIf(auditOpt)
+      .withRequiredArg().withValuesConvertedBy(AuditTarget.valueConverter).defaultsTo(AuditTarget.StdOut)
+    val auditTargetConfigOpt = parser.accepts("audit-target-config","A comma separate key=value list of audit-target specific parameters")
+        .availableIf(auditOpt)
+        .withRequiredArg().defaultsTo("")
+    val auditKafkaClusterIdOpt = parser.accepts("audit-kafka-cluster-id","A string id for the kafka cluster being audited. Will be sent as part of OffsetCommitSnapshots. Defaults to bootstrap-server value")
+      .availableIf(auditOpt)
+      .withRequiredArg()
+    val auditConsumerGroupIdOpt = parser.accepts("audit-consumer-group-id","The name of the auditing consumer group id")
+      .availableIf(auditOpt)
+      .withOptionalArg()
+    val offsetCommitSnapshotSendIntervalMsOpt = parser.accepts("offset-commit-snapshot-send-interval-ms","How often to send offset commits snapshot messages.")
+      .availableIf(auditOpt)
+      .withRequiredArg().ofType(classOf[Int]).defaultsTo(60000)
+    val offsetCommitSnapshotCleanupIntervalMsOpt = parser.accepts("offset-commit-snapshot-cleanup-interval-ms","How often to delete stale offset commit snapshots.")
+      .availableIf(auditOpt)
+      .withRequiredArg().ofType(classOf[Int]).defaultsTo(86400*1000)
 
-    parser.mutuallyExclusive(membersOpt, offsetsOpt, stateOpt)
+
+    parser.mutuallyExclusive(membersOpt, offsetsOpt, stateOpt, auditOpt)
 
     val options = parser.parse(args : _*)
+
 
     val describeOptPresent = options.has(describeOpt)
 
